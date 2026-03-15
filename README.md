@@ -63,6 +63,22 @@
 
 ---
 
+## 🛡️ Security & Access Control
+
+OpenDesk is designed with security in mind to ensure only you can control your machine:
+
+1.  **ID Whitelist**: The bot will *only* respond to the Telegram user ID specified in your `.env` file (`ALLOWED_TELEGRAM_ID`).
+2.  **No Hardcoded Keys**: All API keys and tokens are stored in `.env`, which is automatically ignored by Git.
+3.  **QR Authentication**: Each session requires a unique, short-lived QR code/token to link your laptop to your Telegram account.
+
+### How to find your Telegram ID?
+Search for **@userinfobot** on Telegram and send a message. It will reply with your unique multi-digit ID. Paste this into your `.env` file:
+```bash
+ALLOWED_TELEGRAM_ID=123456789
+```
+
+---
+
 ## 🔑 Getting Your Telegram Bot Token
 
 1. Open Telegram and search for **@BotFather**
