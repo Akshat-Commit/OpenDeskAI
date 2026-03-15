@@ -1,0 +1,9 @@
+target-version = "py312"
+
+[lint]
+select = [
+    "F821",
+    "F811",
+    "F401",
+    "S",     # Bandit (Security)
+]

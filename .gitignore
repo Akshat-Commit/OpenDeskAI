@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# OpenDesk Data
+data/screenshots/
+data/documents/
+data/exports/
+logs/
+opendesk.db
+
+# Secrets
+.env
+
+# Misc
+opendesk.log
+tmp/
+*.png
+*.jpg
+*.mp4
+*.xlsx
+*.docx
+*.txt
+*.html
