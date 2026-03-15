@@ -19,6 +19,7 @@ opendesk.db
 # Misc
 opendesk.log
 tmp/
+!assets/
 *.png
 *.jpg
 *.mp4
