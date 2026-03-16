@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="OpenDesk AI Banner" width="100%">
+</p>
+
 <h1 align="center">
   OpenDesk-AI
 </h1>
