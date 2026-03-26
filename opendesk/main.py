@@ -22,16 +22,40 @@ from loguru import logger
 os.makedirs("logs", exist_ok=True)
 logger.remove()  # Remove default handler
 
-# Use the LOG_LEVEL environment variable (set by cli.py --debug) or default to WARNING to keep UI clean
-console_level = os.environ.get("LOG_LEVEL", "WARNING")
+from opendesk.config import USER_MODE
+
+# Smart Logging: Show deep python tracebacks to devs, hide them from standard users to keep UI clean
+is_dev = (USER_MODE == "developer")
+console_level = "DEBUG" if is_dev else os.environ.get("LOG_LEVEL", "WARNING")
 
 if console_level == "DEBUG":
-    logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", level="DEBUG")
+    logger.add(
+        sys.stderr, 
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", 
+        level="DEBUG", 
+        backtrace=True, 
+        diagnose=is_dev
+    )
 else:
-    logger.add(sys.stderr, format="<level>{message}</level>", level=console_level)
+    logger.add(
+        sys.stderr, 
+        format="<level>{message}</level>", 
+        level=console_level, 
+        backtrace=False, 
+        diagnose=False
+    )
 
-# File logger always catches everything
-logger.add("logs/opendesk.log", rotation="10 MB", retention="5 days", compression="zip", level="DEBUG")
+# File logger always catches everything deeply
+logger.add("logs/opendesk.log", rotation="10 MB", retention="5 days", compression="zip", level="DEBUG", backtrace=True, diagnose=True)
+
+# Register global exception handler so total crashes are printed beautifully in the console for developers
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.opt(exception=(exc_type, exc_value, exc_traceback)).error("Uncaught Critical Crash:")
+
+sys.excepthook = global_exception_handler
 
 from opendesk.utils.context_monitor import monitor_instance
 from opendesk.utils.qr_generator import generate_session_qr
