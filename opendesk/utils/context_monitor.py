@@ -28,7 +28,7 @@ class ContextMonitor:
         self.is_running = False
         if self._thread:
             self._thread.join(timeout=2.0)
-            logger.info("ContextMonitor stopped.")
+            logger.debug("ContextMonitor stopped.")
 
     def _monitor_loop(self):
         """Internal loop to periodically fetch system state."""

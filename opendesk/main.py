@@ -188,9 +188,9 @@ def run_opendesk():
             from opendesk.bot import run_bot
             run_bot()
     except KeyboardInterrupt:
-        console.print("\n  [yellow]Shutting down securely...[/yellow]")
+        console.print("\n      [yellow]Shutting down securely...[/yellow]")
     finally:
-        console.print("  [dim]Cleaning up background tasks...[/dim]")
+        console.print("      [dim]Cleaning up background tasks...[/dim]")
         file_indexer.stop_watcher()
         monitor_instance.stop()
         try:

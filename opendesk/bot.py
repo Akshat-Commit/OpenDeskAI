@@ -389,7 +389,7 @@ async def post_stop(application):
         try:
             await task_manager.processor_task
         except asyncio.CancelledError:
-            logger.info("TaskManager queue processor stopped cleanly.")
+            logger.debug("TaskManager queue processor stopped cleanly.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Log the error and send a message pointing to the logs."""
@@ -415,5 +415,5 @@ def run_bot():
     
     app.add_error_handler(error_handler)
 
-    logger.info("Bot is polling. Press Ctrl+C to stop.")
+    logger.debug("Bot is polling. Press Ctrl+C to stop.")
     app.run_polling()

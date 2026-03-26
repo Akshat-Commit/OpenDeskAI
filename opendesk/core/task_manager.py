@@ -20,7 +20,7 @@ class TaskManager:
         
     async def start_queue_processor(self):
         """Starts the background worker to process commands one by one."""
-        logger.info("Task queue processor started.")
+        logger.debug("Task queue processor started.")
         while True:
             try:
                 task_data = await self.queue.get()
