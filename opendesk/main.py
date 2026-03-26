@@ -24,26 +24,24 @@ logger.remove()  # Remove default handler
 
 from opendesk.config import USER_MODE
 
-# Smart Logging: Show deep python tracebacks to devs, hide them from standard users to keep UI clean
+# Smart Logging: Show deep python tracebacks to devs on crash, hide them from standard users to keep UI clean
 is_dev = (USER_MODE == "developer")
-console_level = "DEBUG" if is_dev else os.environ.get("LOG_LEVEL", "WARNING")
+console_level = os.environ.get("LOG_LEVEL", "INFO" if is_dev else "WARNING")
 
-if console_level == "DEBUG":
-    logger.add(
-        sys.stderr, 
-        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", 
-        level="DEBUG", 
-        backtrace=True, 
-        diagnose=is_dev
-    )
-else:
-    logger.add(
-        sys.stderr, 
-        format="<level>{message}</level>", 
-        level=console_level, 
-        backtrace=False, 
-        diagnose=False
-    )
+# Display format adjustments
+format_string = (
+    "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>" 
+    if console_level == "DEBUG" 
+    else "<level>{message}</level>"
+)
+
+logger.add(
+    sys.stderr, 
+    format=format_string, 
+    level=console_level, 
+    backtrace=is_dev, 
+    diagnose=is_dev
+)
 
 # File logger always catches everything deeply
 logger.add("logs/opendesk.log", rotation="10 MB", retention="5 days", compression="zip", level="DEBUG", backtrace=True, diagnose=True)
