@@ -81,8 +81,8 @@ def _pull_ollama_model(model: str) -> bool:
     """Downloads the Ollama model. Returns True on success."""
     print(f"\n📥 Downloading {model} (this may take a few minutes)...\n")
     try:
-        result = subprocess.run(
-            ["ollama", "pull", model],
+        result = subprocess.run(  # noqa: S603
+            ["ollama", "pull", model],  # noqa: S607
             timeout=600  # 10 minute timeout
         )
         if result.returncode == 0:

@@ -1,6 +1,4 @@
 from rich.console import Console
-from rich.text import Text
-from rich import print as rprint
 import shutil
 
 console = Console()
@@ -23,24 +21,26 @@ def show_banner():
     
     # Version line in uppercase - Monochromatic
     console.print(
-        "  V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/YOURNAME/OPENDESK",
+        "  V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/AKSHAT-COMMIT/OPENDESK",
         style="dim white"
     )
     console.print()
 
 def show_mode_banner(mode: str):
-    """Shows a prominent full-width monochromatic mode message with '!' borders."""
+    """Shows a prominent full-width monochromatic mode message."""
     if not mode:
         return
-    import shutil
-    columns = shutil.get_terminal_size().columns
-    label = f"{mode.upper()} MODE ACTIVATED"
+    from rich.panel import Panel
+    from rich.align import Align
     
-    # borders using "!" and centered white text in grey
-    # Using 'grey70' for the '!' borders to give that monochromatic texture
-    console.print("!" * columns, style="bold grey70")
-    console.print(label.center(columns), style="bold white")
-    console.print("!" * columns, style="bold grey70")
+    label = f"[bold white]{mode.upper()} MODE ACTIVATED[/bold white]"
+    console.print(
+        Panel(
+            Align.center(label),
+            border_style="bold grey70",
+            expand=True
+        )
+    )
     console.print()
 
 def show_health_header():
@@ -58,7 +58,8 @@ def show_health_footer():
 def show_completion_banner():
     """Shows a simple, clean, non-blocking completion message."""
     console.print(
-        "\n  [bold green]●[/bold green] [bold grey70]OPENDESK READY[/bold grey70] [bold white]— SCAN QR CODE TO CONNECT[/bold white]\n"
+        "\n  [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"
     )
-
-    console.print()
+    console.print(
+        "  [dim white]Generating secure session link...[/dim white]\n"
+    )

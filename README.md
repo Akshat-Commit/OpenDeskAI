@@ -72,6 +72,8 @@ You → Telegram → OpenDesk → Your Laptop
 | 🔄 Smart Fallback | Auto switches between AI models |
 | 🌍 Remote Access | Control from anywhere via QR code |
 | 🛡️ Private & Secure | Only YOU can access your machine |
+| ⚡ Fast-Lane Architecture | Instant Semantic Routing with 0-delay RAM Caching |
+| 👻 Background Daemon | Run 24/7 silently via PM2 Process Manager |
 
 ---
 
@@ -94,6 +96,9 @@ You → Telegram → OpenDesk → Your Laptop
 ### Optional (For Faster AI):
 - Free Groq API key ([Get here](https://console.groq.com))
 - Free Gemini API key ([Get here](https://aistudio.google.com))
+
+### Optional (For Screen OCR):
+- Tesseract OCR for text extraction ([Download here](https://github.com/UB-Mannheim/tesseract/wiki))
 
 > ⚠️ Note: OpenDesk currently 
 > supports Windows only. 
@@ -182,6 +187,21 @@ When started:
 "what is my battery level"
 "play Blinding Lights on Spotify"
 "create a file called notes.txt"
+
+---
+
+## 👻 Running in the Background (24/7)
+If you don't want to keep a terminal window open, you can run OpenDesk silently as a background service using **PM2**.
+
+1. Install PM2: `npm install -g pm2`
+2. Start the daemon: `pm2 start ecosystem.config.js`
+3. Save the process: `pm2 save`
+
+**PM2 Cheatsheet:**
+- View live logs: `pm2 logs OpenDesk`
+- View status: `pm2 status`
+- Stop the bot: `pm2 stop OpenDesk`
+- Restart the bot: `pm2 restart OpenDesk`
 
 ---
 

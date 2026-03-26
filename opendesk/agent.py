@@ -1,31 +1,47 @@
 from loguru import logger
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Callable
 
 from opendesk.ollama_agent.langchain_agent import run as run_langchain
+from opendesk.semantic_router import get_routing_info
 
 
-
-async def run_agent_loop(user_text: str, history: Optional[List[Dict[str, str]]] = None, max_steps: int = 5) -> Tuple[str, List[Dict[str, str]], List[str]]:
+async def run_agent_loop(user_text: str, history: Optional[List[Dict[str, str]]] = None, status_callback: Optional[Callable] = None) -> Tuple[str, List[Dict[str, str]], List[str]]:
     """
     Wrapper for the Telegram bot to use the LangChain ReAct agent.
     Maintains compatibility with bot.py's history dictionary format.
+    Uses Semantic Router to optimize speed and context.
+    Provides real-time updates via status_callback.
     """
-    current_history = list(history) if history else []
+    # 1. ANALYZE COMMAND COMPLEXITY
+    routing = await get_routing_info(user_text)
+    logger.info(f"Routing Decision: {routing['level'].upper()} (Score: {routing['score']})")
+
+    if status_callback:
+        await status_callback(f"🧠 Complexity: {routing['level'].upper()}")
+
+    # 2. SMART CONTEXT WINDOW
+    original_history = list(history) if history else []
+    history_limit = routing.get("history_limit", 20)
+    current_history = original_history[-history_limit:] if history_limit > 0 else []
     
-    # Format history into a readable string for the LangChain agent
     memory_str = ""
     if current_history:
         for msg in current_history:
             role = msg["role"].capitalize()
             memory_str += f"{role}: {msg['content']}\n"
             
-    logger.info("Invoking LangChain Agent...")
+    logger.info(f"Invoking LangChain Agent (History size: {len(current_history)})...")
     
-    # Run LangChain agent
-    final_answer, attachments = await run_langchain(user_text, memory_history=memory_str)
+    # 3. RUN AGENT
+    final_answer, attachments = await run_langchain(
+        user_text, 
+        memory_history=memory_str,
+        status_callback=status_callback,
+        routing_info=routing
+    )
     
-    # Update local history
-    current_history.append({"role": "user", "content": user_text})
-    current_history.append({"role": "assistant", "content": final_answer})
+    full_history = list(original_history)
+    full_history.append({"role": "user", "content": user_text})
+    full_history.append({"role": "assistant", "content": final_answer})
     
-    return final_answer, current_history, attachments
+    return final_answer, full_history, attachments

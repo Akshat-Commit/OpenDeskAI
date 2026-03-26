@@ -10,27 +10,38 @@ from opendesk.db.crud import log_screenshot
 
 
 
+from opendesk.utils.ocr_analyzer import ocr_analyzer
+
 @register_tool("take_screenshot")
-def take_screenshot(context: str = "manual screenshot") -> str:
-    """Takes a screenshot of the primary screen and saves it to the database."""
+def take_screenshot(context: str = "manual screenshot", save_path: str = None) -> str:
+    """Takes a screenshot of the primary screen, saves it, and runs OCR in the background."""
     try:
-        # 1. Prepare directory
-        shot_dir = os.path.join("data", "screenshots")
-        os.makedirs(shot_dir, exist_ok=True)
+        from datetime import datetime
         
-        # 2. Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
-        save_path = os.path.join(shot_dir, filename)
+        if not save_path:
+            # 1. Prepare directory
+            shot_dir = os.path.join("data", "screenshots")
+            os.makedirs(shot_dir, exist_ok=True)
+            
+            # 2. Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = os.path.join(shot_dir, f"screenshot_{timestamp}.png")
+        else:
+            # Create parent dirs safely if save_path has a directory
+            if os.path.dirname(save_path):
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
             
         # 3. Capture and save
         screenshot = ImageGrab.grab()
         screenshot.save(save_path)
         
-        # 4. Record in database
+        # 4. Trigger OCR in background (Zero impact on response time)
+        ocr_analyzer.analyze_in_background(save_path)
+        
+        # 5. Record in database (legacy)
         log_screenshot(save_path, context)
         
-        return f"Screenshot saved successfully at {os.path.abspath(save_path)} and recorded in database."
+        return f"Screenshot saved successfully at {os.path.abspath(save_path)} and queued for OCR."
     except Exception as e:
         return f"Error taking screenshot: {e}"
 
@@ -110,7 +121,7 @@ def open_camera_app() -> str:
     """Opens the Windows Camera application on the host screen for the user."""
     import subprocess
     try:
-        subprocess.run("start microsoft.windows.camera:", shell=True)
+        subprocess.run(["cmd", "/c", "start", "microsoft.windows.camera:"])  # noqa: S607
         return "Successfully opened the Windows Camera app on the screen."
     except Exception as e:
         return f"Error opening camera app: {e}"
@@ -181,7 +192,7 @@ def send_whatsapp_message(contact_name: str, message: str) -> str:
     """A highly reliable macro that opens WhatsApp desktop, searches for the exact contact name, and sends them a message."""
     try:
         # 1. Open WhatsApp via Windows URI
-        subprocess.run("start whatsapp:", shell=True)
+        subprocess.run(["cmd", "/c", "start", "whatsapp:"])  # noqa: S607
         # Give WhatsApp plenty of time to launch and focus
         time.sleep(5)
         
@@ -215,7 +226,7 @@ def play_spotify_music(song_name: str) -> str:
     """A highly reliable macro that opens Spotify desktop, searches for the exact song, and plays the top result."""
     try:
         # 1. Open Spotify via Windows URI
-        subprocess.run("start spotify:", shell=True)
+        subprocess.run(["cmd", "/c", "start", "spotify:"])  # noqa: S607
         # Give Spotify plenty of time to launch and focus
         time.sleep(5)
         
@@ -298,25 +309,34 @@ def set_volume(level: int) -> str:
     """Sets the system master volume to an exact percentage (0-100)."""
     try:
         from pycaw.pycaw import AudioUtilities
+        import pythoncom
         
-        if not 0 <= level <= 100:
-            return f"Error: Volume level {level} is out of bounds. Must be between 0 and 100."
+        # Initialize COM for this thread
+        pythoncom.CoInitialize()
+        
+        try:
+            if not 0 <= level <= 100:
+                return f"Error: Volume level {level} is out of bounds. Must be between 0 and 100."
+                
+            devices = AudioUtilities.GetSpeakers()
+            volume = devices.EndpointVolume
             
-        devices = AudioUtilities.GetSpeakers()
-        volume = devices.EndpointVolume
-        
-        # Calculate scalar volume (0.0 to 1.0)
-        scalar_vol = float(level) / 100.0
-        
-        # Unmute if muted
-        if volume.GetMute():
-            volume.SetMute(0, None)
+            # Calculate scalar volume (0.0 to 1.0)
+            scalar_vol = float(level) / 100.0
             
-        volume.SetMasterVolumeLevelScalar(scalar_vol, None)
-        
-        return f"Successfully set system volume to {level}%."
+            # Unmute if muted
+            if volume.GetMute():
+                volume.SetMute(0, None)
+                
+            volume.SetMasterVolumeLevelScalar(scalar_vol, None)
+            
+            return f"Successfully set system volume to {level}%."
+        finally:
+            # Always uninitialize COM
+            pythoncom.CoUninitialize()
+            
     except ImportError:
-        return "Error: pycaw library is missing. The user must run `pip install pycaw comtypes` to enable exact volume control."
+        return "Error: pycaw or comtypes library is missing. The user must run `pip install pycaw comtypes` to enable exact volume control."
     except Exception as e:
         logger.error(f"Failed to set volume via pycaw: {e}")
         return f"Error setting volume: {e}"
@@ -391,3 +411,86 @@ def terminate_process(pid: int) -> str:
     except Exception as e:
         logger.error(f"Failed to terminate process {pid}: {e}")
         return f"Error terminating process: {e}"
+
+@register_tool("use_calculator")
+def use_calculator(calculation: str) -> str:
+    """A reliable macro to type a calculation into the focusable window (like calculator), press enter, and take a screenshot of the result."""
+    import time
+    from opendesk.tools.system import take_screenshot
+    
+    try:
+        # Type the calculation
+        pyautogui.write(calculation, interval=0.05)
+        pyautogui.press('enter')
+        
+        # Wait for result to appear
+        time.sleep(0.5)
+        
+        # NOW take screenshot, Result will be visible!
+        shot_res = take_screenshot("calculator result")
+        
+        return f"Successfully typed calculation '{calculation}'. Result should be visible on screen. {shot_res}"
+    except Exception as e:
+        logger.error(f"Calculator macro failed: {e}")
+        return f"Error executing calculator macro: {e}"
+
+@register_tool("get_current_time")
+def get_current_time() -> str:
+    """Returns the current system time in a readable format."""
+    now = datetime.now()
+    return f"The current system time is {now.strftime('%I:%M %p')}."
+
+@register_tool("get_battery_level")
+def get_battery_level() -> str:
+    """Returns the current battery percentage and charging status."""
+    import psutil
+    battery = psutil.sensors_battery()
+    if not battery:
+        return "Battery information not available on this device."
+    
+    status = "Charging" if battery.power_plugged else "Discharging"
+    return f"Battery is at {battery.percent}% ({status})."
+
+@register_tool("get_system_info")
+def get_system_info() -> str:
+    """Returns basic system information (CPU usage, RAM usage, and OS)."""
+    import psutil
+    import platform
+    
+    cpu = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory().percent
+    os_name = platform.system()
+    os_release = platform.release()
+    
+    return f"OS: {os_name} {os_release} | CPU: {cpu}% | RAM: {ram}%"
+
+@register_tool("search_screenshots")
+def search_screenshots(query: str) -> str:
+    """
+    Search through all screenshots by their
+    content. Finds screenshots containing
+    specific text, errors, or keywords.
+    Use when user asks to find a screenshot
+    by what was visible on screen.
+    """
+    from opendesk.utils.ocr_analyzer import ocr_analyzer
+    
+    results = ocr_analyzer.search_screenshots(query)
+    
+    if not results:
+        return f"No screenshots found containing '{query}'"
+    
+    response = f"Found {len(results)} screenshot(s) containing '{query}':\n\n"
+    
+    for i, result in enumerate(results, 1):
+        path = result[0]
+        captured = result[2]
+        filename = os.path.basename(path)
+        
+        response += (
+            f"{i}. {filename}\n"
+            f"   Captured: {captured}\n"
+            f"   Path: {path}\n\n"
+        )
+    
+    return response

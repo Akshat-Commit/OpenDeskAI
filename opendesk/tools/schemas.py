@@ -22,7 +22,7 @@ class CaptureWebcamInput(BaseModel):
     save_path: Optional[str] = Field(default=None, description="Optional relative or absolute file path to save the .jpg photo. If none is provided, a default timestamped filename will be used.")
 
 class TakeScreenshotInput(BaseModel):
-    save_path: Optional[str] = Field(default=None, description="Optional relative or absolute file path to save the .png screenshot. If none is provided, a default timestamped filename will be used.")
+    save_path: Optional[str] = Field(default=None, description="Optional relative or absolute file path to save the .png screenshot. This tool AUTOMATICALLY captures the screen and shares/sends the photo directly to the user. You DO NOT need to use share_file afterward.")
 
 class OpenAppInput(BaseModel):
     app_name: str = Field(description="The common name of the application you want to open. For example: 'vscode', 'chrome', 'whatsapp', 'calculator', 'notepad'.")

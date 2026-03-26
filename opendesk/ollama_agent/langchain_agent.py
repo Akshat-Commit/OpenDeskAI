@@ -4,16 +4,18 @@ import os
 import re
 import json
 import time
+import asyncio
+from typing import Optional, Callable
 
 from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
-from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GEMINI_API_KEY, GROQ_API_KEY_1, GROQ_API_KEY_2, GITHUB_API_KEY  # type: ignore
+from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GROQ_API_KEY_1, GROQ_API_KEY_2, GITHUB_API_KEY  # type: ignore
 from opendesk.tools.registry import _TOOLS  # type: ignore
 from opendesk.tools.schemas import TOOL_SCHEMAS
-from opendesk.ollama_agent.memory_agent import memory_agent
+
 from opendesk.ollama_agent.judge_agent import judge_agent
 
 
@@ -66,7 +68,7 @@ def _check_ollama_available() -> bool:
     """Quick check if Ollama is reachable."""
     import requests
     try:
-        resp = requests.get(OLLAMA_HOST, timeout=2)
+        resp = requests.get(OLLAMA_HOST, timeout=5)
         return resp.status_code == 200
     except Exception:
         return False
@@ -80,7 +82,6 @@ def build_fallback_chain() -> list:
     - local: Ollama only
     - cloud: Groq + optional Ollama fallback
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
     import opendesk.config as cfg
     
     chain = []
@@ -88,27 +89,48 @@ def build_fallback_chain() -> list:
 
 
     if mode == "developer":
-        # ── Developer: Full 6-model chain (new order) ──
-        # 1. Groq Key 1 - llama-3.3-70b-versatile
-        chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-        # 2. Groq Key 2 - llama-3.3-70b-versatile
-        chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
-        # 3. GitHub - gpt-4o-mini
-        if GITHUB_API_KEY:
-            try:
-                from langchain_openai import ChatOpenAI  # type: ignore
-                llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
-                chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
-            except ImportError:
-                logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
-        # 4. Gemini - gemini-2.0-flash
-        if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
-            llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GEMINI_API_KEY, temperature=0.0)
-            chain.append({"name": "Gemini 2.0 Flash", "llm": llm_gemini})
-        # 5. Groq Key 1 - mixtral-8x7b
-        chain.append({"name": "Groq Mixtral (Key 1)", "llm": ChatGroq(model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-        # 6. Groq Key 2 - mixtral-8x7b
-        chain.append({"name": "Groq Mixtral (Key 2)", "llm": ChatGroq(model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+        if getattr(cfg, "OPENDESK_ENV", "production") == "testing":
+            # ── TESTING MODE (No Gemini per User Request) ──
+            # 1. Groq Key 1 - llama-3.3-70b-versatile
+            chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            
+            # 2. Groq Key 2 - llama-3.3-70b-versatile
+            chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+            
+            # 3. GitHub - gpt-4o-mini
+            if GITHUB_API_KEY:
+                try:
+                    from langchain_openai import ChatOpenAI  # type: ignore
+                    llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
+                    chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
+                except ImportError:
+                    logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
+                    
+            # 4. Local - Gemma fallback
+            if _check_ollama_available():
+                llm_gemma = ChatOllama(model="gemma3:12b", base_url=OLLAMA_HOST, temperature=0.0)
+                chain.append({"name": "Local Gemma Fallback", "llm": llm_gemma})
+        else:
+            # ── PRODUCTION MODE (No Gemini per User Request) ──
+            # 1. Groq Key 1 - llama-3.3-70b-versatile
+            chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            
+            # 2. Groq Key 2 - llama-3.3-70b-versatile
+            chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+
+            # 3. GitHub - gpt-4o-mini
+            if GITHUB_API_KEY:
+                try:
+                    from langchain_openai import ChatOpenAI  # type: ignore
+                    llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
+                    chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
+                except ImportError:
+                    logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
+
+            # 4. Local - Gemma fallback
+            if _check_ollama_available():
+                llm_gemma = ChatOllama(model="gemma3:12b", base_url=OLLAMA_HOST, temperature=0.0)
+                chain.append({"name": "Local Gemma Fallback", "llm": llm_gemma})
 
         # No logging here to keep terminal clean
 
@@ -195,8 +217,8 @@ def _parse_hallucinated_tool_call(text: str):
                     
                 if tool_args: # Only return if we actually found kwargs
                     return tool_name, tool_args
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Kwargs extraction failed: {e}")
 
 
     # Pattern 3: XML style <function=tool_name>{"arg": "val"}</function> (backup)
@@ -234,19 +256,21 @@ def _parse_hallucinated_tool_call(text: str):
 
     return None, None
 
-async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[str]]:
+async def run(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None, routing_info: Optional[dict] = None) -> Tuple[str, List[str]]:
     """
-    SUPERVISOR ENTRY POINT: Orchestrates Memory, Executor, and Judge.
+    SUPERVISOR ENTRY POINT: Orchestrates Executor and Judge.
+    Uses routing_info passed from Semantic Router to bypass complex logic.
     """
-    # 1. MEMORY AGENT: Check history for best approach
-    hint = memory_agent.get_context(user_message)
-    memory_context = ""
-    if hint:
-        memory_context = f"\n[MEMORY HINT]: For similar requests, the tool '{hint['tool']}' worked best using model '{hint['model']}'."
-        if hint['failed']:
-            memory_context += f" Avoid these failed approaches: {', '.join(hint['failed'])}."
+    routing_info = routing_info or {}
+    
+    if routing_info.get("skip_judge", False):
+        logger.info(f"SEMANTIC ROUTER OPTIMIZATION: '{routing_info.get('level')}' intent detected. Bypassing Judge.")
+        result, attachments, _ = await _execute(user_message, memory_history, status_callback=status_callback)
+        return result, attachments
 
-    max_supervisor_retries = 3
+    memory_context = ""
+
+    max_supervisor_retries = 2
     current_correction = ""
     tool_logs = []
     import asyncio
@@ -258,7 +282,7 @@ async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[st
         if memory_context or current_correction:
             executor_input = f"{user_message}\n{memory_context}\n{current_correction}".strip()
             
-        executor_task = asyncio.create_task(_execute(executor_input, memory_history))
+        executor_task = asyncio.create_task(_execute(executor_input, memory_history, status_callback=status_callback))
         judge_prep_task = asyncio.create_task(judge_agent.prepare_evaluation_criteria(user_message))
         
         # Wait for both to finish simultaneously
@@ -273,10 +297,6 @@ async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[st
         
         if is_simple_task and not current_correction:
             logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple command.")
-            # SPEED OPTIMIZATION B: Async Memory Saving (Fire and Forget)
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", True)
-            )
             return result, attachments
 
         # 3. JUDGE AGENT: Evaluate using the pre-computed criteria
@@ -298,23 +318,16 @@ async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[st
         logger.info(f"Judge Evaluation: {evaluation}")
         
         if evaluation["task_completed"] and not evaluation["hallucinated"]:
-            # SUCCESS: Save to memory and return
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", True)
-            )
             return result, attachments
 
         else:
             # FAILURE: Record mismatch and retry
             logger.warning(f"Judge rejected response: {evaluation['correction']}")
             current_correction = f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}. Please try again and ensure you call the correct tools."
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", False)
-            )
             
     return f"I tried {max_supervisor_retries} times but could not complete this task. Final issue: {current_correction}", []
 
-async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, List[str], List[Dict]]:
+async def _execute(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None) -> Tuple[str, List[str], List[Dict]]:
     """
     Internal execution step (The Agent Loop).
     Returns (response_text, attachments, tool_logs)
@@ -353,7 +366,7 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
         active_fallback_chain.append({"name": option["name"], "llm": llm_with_tools})
     
     attachments = []
-    max_iterations = 10
+    max_iterations = 3
     
     for i in range(max_iterations):
         logger.info(f"Agent Loop Iteration {i+1}/{max_iterations}")
@@ -452,7 +465,8 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                                         tool_logs.append({"name": h_name, "args": h_args, "output": str(obs)})
                                         # Handle attachments ...
                                         return str(obs), attachments, tool_logs
-                                    except Exception: pass
+                                    except Exception as e:
+                                        logger.debug(f"Inline fallback tool execution failed: {e}")
                         
                         logger.warning(f"Model {model_name} failed with error: {error_text[:200]}. Falling back to next model...")
                         
@@ -511,7 +525,9 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                     obs = f"Error: Tool '{tool_name}' not found. Available: {list(_TOOLS.keys())}"
                 else:
                     try:
-                        import asyncio
+                        if status_callback:
+                            await status_callback(f"⚙️ Executing: {tool_name}...")
+                        
                         # BLOCKING TOOL: Run in thread to keep event loop free
                         obs = await asyncio.to_thread(func, **tool_args)
                         
@@ -532,9 +548,14 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                                         
                                     if tool_name == "take_screenshot":
                                         base64_image = _encode_image(path_str)
+                                        
+                                        # 1. Satisfy the LLM's required ToolMessage contract first
+                                        messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                                        
+                                        # 2. Inject the actual image back into the context as a HumanMessage
                                         image_message = HumanMessage(
                                             content=[
-                                                {"type": "text", "text": f"Tool '{tool_name}' result:\n{obs}\nHere is the screenshot:"},
+                                                {"type": "text", "text": f"Here is the screenshot from the screen:"},
                                                 {"type": "image_url", "image_url": f"data:image/jpeg;base64,{base64_image}"}
                                             ]
                                         )

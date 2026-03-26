@@ -6,3 +6,15 @@ screenshot_*
 opendesk.db
 logs/
 .env
+.venv/
+__pycache__/
+*.pyc
+ecosystem.config.js
+*.txt
+*.json
+*.html
+tmp/
+data/
+opendesk.egg-info/
+tests/test_full_agent.py
+error_trace.log

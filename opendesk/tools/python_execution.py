@@ -23,8 +23,8 @@ def run_python_script(code: str) -> str:
             f.write(code)
             
         # Execute it with a 30 second timeout to prevent infinite loops 
-        result = subprocess.run(
-            ["python", path],
+        result = subprocess.run(  # noqa: S603
+            ["python", path],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=30,
@@ -48,7 +48,7 @@ def run_python_script(code: str) -> str:
     except subprocess.TimeoutExpired:
         try:
             os.remove(path) # type: ignore
-        except:
+        except:  # noqa: S110
              pass
         return "Script execution timed out after 30 seconds. Infinite loop?"
     except Exception as e:

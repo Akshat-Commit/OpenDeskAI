@@ -18,6 +18,9 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 # User mode: "developer", "local", or "cloud" (set by setup_wizard or .env)
 USER_MODE = os.getenv("USER_MODE", "").strip().lower()
 
+# Environment: "production" or "testing"
+OPENDESK_ENV = os.getenv("OPENDESK_ENV", "production").strip().lower()
+
 # Security: Allowed Telegram User ID for command execution
 _allowed_id = os.getenv("ALLOWED_TELEGRAM_ID", "")
 ALLOWED_TELEGRAM_ID = int(_allowed_id) if _allowed_id.isdigit() else None

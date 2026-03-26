@@ -1,11 +1,13 @@
 import time
 import requests # type: ignore
 import subprocess
+from loguru import logger
 from langchain_core.messages import HumanMessage # type: ignore
 import threading
 import sys
 import itertools
 import asyncio
+from typing import Optional
 
 class AnimatedSpinner:
     def __init__(self, message="Loading..."):
@@ -13,7 +15,7 @@ class AnimatedSpinner:
         self.spinner_cycle = itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
         self.message = message
         self.running = False
-        self.spinner_thread = None
+        self.spinner_thread: Optional[threading.Thread] = None
         self.columns = shutil.get_terminal_size().columns
 
     def _spin(self):
@@ -24,9 +26,10 @@ class AnimatedSpinner:
 
     def start(self):
         self.running = True
-        self.spinner_thread = threading.Thread(target=self._spin)
-        self.spinner_thread.daemon = True
-        self.spinner_thread.start()
+        thread = threading.Thread(target=self._spin)
+        thread.daemon = True
+        self.spinner_thread = thread
+        thread.start()
 
     def stop(self, final_text, status="success"):
         self.running = False
@@ -44,49 +47,62 @@ class AnimatedSpinner:
         sys.stdout.flush()
 
 def check_database_raw():
-    from opendesk.db.connection import DatabaseConnection
-    db = DatabaseConnection()
-    db.connect()
-    return True
+    try:
+        from opendesk.db.connection import DatabaseConnection
+        db = DatabaseConnection()
+        db.connect()
+        return True
+    except Exception:
+        return False
 
 def check_ollama_raw():
     from opendesk.config import OLLAMA_HOST
     # Text Model
     try:
-        if requests.get(OLLAMA_HOST, timeout=1).status_code == 200:
+        if requests.get(OLLAMA_HOST, timeout=5).status_code == 200:
             return True
-    except requests.exceptions.ConnectionError:
+    except requests.RequestException as e:
+        logger.debug(f"Ollama text check failed: {e}")
         pass
         
     # Start Ollama silently in the background
-    subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    import shutil
+    ollama_path = shutil.which("ollama") or "ollama"
+    subprocess.Popen([ollama_path, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
     
     # Wait for it to boot (up to 15 seconds)
     for _ in range(15):
         time.sleep(1)
         try:
-            if requests.get(OLLAMA_HOST, timeout=1).status_code == 200:
+            if requests.get(OLLAMA_HOST, timeout=5).status_code == 200:
                 return True
-        except requests.exceptions.ConnectionError:
+        except requests.RequestException:
             pass
     return False
 
 def check_vision_raw():
-    from opendesk.ollama_agent.langchain_agent import llm_vision
-    test_msg = [HumanMessage(content="ok")]
-    llm_vision.invoke(test_msg)
-    return True
+    try:
+        from opendesk.ollama_agent.langchain_agent import llm_vision
+        test_msg = [HumanMessage(content="ok")]
+        llm_vision.invoke(test_msg)
+        return True
+    except Exception:
+        return False
 
 def check_api_raw():
-    from opendesk.ollama_agent.langchain_agent import fallback_chain
-    test_msg = [HumanMessage(content="ok")]
-    for option in fallback_chain:
-        try:
-            option["llm"].invoke(test_msg)
-            return True
-        except Exception:
-            pass
-    return False
+    try:
+        from opendesk.ollama_agent.langchain_agent import fallback_chain
+        test_msg = [HumanMessage(content="ok")]
+        for option in fallback_chain:
+            try:
+                option["llm"].invoke(test_msg)
+                return True
+            except Exception as e:
+                logger.debug(f"API fallback option failed: {e}")
+                pass
+        return False
+    except Exception:
+        return False
 
 async def run_health_checks():
     """Runs all health checks sequentially with 1.0s timeout to prevent UI freeze."""
@@ -98,9 +114,9 @@ async def run_health_checks():
     if mode == "cloud":
         try:
             from opendesk.config import OLLAMA_HOST
-            if requests.get(OLLAMA_HOST, timeout=1).status_code == 200:
+            if requests.get(OLLAMA_HOST, timeout=5).status_code == 200:
                 print("ℹ️  Local Ollama detected — will use as fallback")
-        except Exception:
+        except requests.RequestException:
             pass
     else:
         checks.append(("Model Running", check_ollama_raw))

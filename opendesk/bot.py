@@ -1,27 +1,104 @@
 import os
 from loguru import logger
-from typing import Dict, List
 
 from telegram import Update # type: ignore
-from telegram.constants import ChatAction # type: ignore
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes # type: ignore
 
 from opendesk.config import BOT_TOKEN, ALLOWED_TELEGRAM_ID # type: ignore
-from opendesk.agent import run_agent_loop # type: ignore
 
 
 
-# Maximum messages to keep in memory per chat
-MAX_MEMORY = 20
-
-# In-memory conversation history per chat
-USER_HISTORY: Dict[int, List[Dict[str, str]]] = {}
-
-# Track active agent tasks per chat for cancellation
 import asyncio
-ACTIVE_TASKS: Dict[int, asyncio.Task] = {}
+from typing import Dict
+from datetime import datetime
+import psutil
 
-from opendesk.db.crud import log_chat_message, get_all_screenshots, get_screenshot_by_id
+# Global state trackers
+from opendesk.core.task_manager import task_manager # type: ignore
+USER_PAUSED_STATE: Dict[int, bool] = {}
+
+INSTANT_REPLIES = {
+    # Greetings
+    "hello": "Hey! OpenDesk here! How can I help?",
+    "hi": "Hey! OpenDesk here! How can I help?",
+    "hey": "Hey! OpenDesk here! How can I help?",
+    
+    # Thanks
+    "thankyou": "You're welcome! 😊 Anything else?",
+    "thank you": "You're welcome! 😊 Anything else?",
+    "thanks": "You're welcome! 😊 Anything else?",
+    "thnx": "You're welcome! 😊 Anything else?",
+    "thx": "You're welcome! 😊 Anything else?",
+    "ty": "You're welcome! 😊 Anything else?",
+    
+    # Acknowledgements
+    "ok": "Got it! 👍 Send next command.",
+    "okay": "Got it! 👍 Send next command.",
+    "ok thanks": "You're welcome! 😊",
+    "ok thankyou": "You're welcome! 😊",
+    "noted": "Got it! 👍",
+    "got it": "Great! 😊 What's next?",
+    "done": "Awesome! ✅ What's next?",
+    "nice": "Glad it worked! 😊",
+    "good": "Great! 😊 Anything else?",
+    "great": "Awesome! 🎉 What's next?",
+    "perfect": "Great! 😊 What's next?",
+    "awesome": "Glad to help! 🙌",
+    "wow": "😊 What can I do next?",
+    "cool": "😎 What's next?",
+    
+    # Goodbye
+    "bye": "Goodbye! 👋 Come back anytime!",
+    "goodbye": "Goodbye! 👋 Take care!",
+    "see you": "See you! 👋",
+    "cya": "See you! 👋",
+    
+    # How are you
+    "how are you": "All systems running perfectly! ⚡",
+    "how r u": "All systems running perfectly! ⚡",
+    "whats up": "Ready to help! ⚡ What do you need?",
+    "sup": "Ready! ⚡ What do you need?",
+    
+    # What can you do
+    "what can you do": (
+        "I can control your laptop! Try:\n"
+        "• open chrome\n"
+        "• set volume to 50\n"
+        "• take a screenshot\n"
+        "• share a file\n"
+        "• play music on spotify"
+    ),
+}
+
+TIME_PATTERNS = [
+    "what time is it",
+    "what time it is", 
+    "what is the time",
+    "time please",
+    "current time",
+    "tell me time",
+]
+
+BATTERY_PATTERNS = [
+    "battery level",
+    "battery status",
+    "how much battery",
+]
+
+STOP_WORDS = [
+    "stop", "Stop", "STOP",
+    "cancel", "Cancel", "CANCEL", 
+    "abort", "Abort", "halt",
+    "pause", "Pause", "exit",
+    "/stop", "/cancel", "/abort"
+]
+
+RESUME_WORDS = [
+    "resume", "Resume", "continue",
+    "go", "start", "/resume", "/start"
+]
+
+from opendesk.db.crud import get_all_screenshots, get_screenshot_by_id
 from opendesk.utils.session_manager import get_session_by_user, claim_session, disconnect_session, is_session_valid
 
 def is_authorized(user_id: int) -> bool:
@@ -47,7 +124,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_session_valid(token):
             success = claim_session(token, user_id)
             if success:
-                USER_HISTORY[chat_id] = []  # Fresh start for new session
+                from opendesk.core.simple_memory import simple_memory
+                simple_memory.history[chat_id] = []  # Fresh start for new session
                 await update.message.reply_text("✅ Connected to your laptop! Send commands now.")
                 return
             else:
@@ -151,27 +229,77 @@ async def getscreenshot_handler(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Error in getscreenshot: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+async def apps_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows all indexed apps from the AppIndexer."""
+    user_id = update.message.fromuser.id if hasattr(update.message, 'from_user') else update.message.from_user.id
+    if not is_authorized(user_id):
+        return
+        
+    if not get_session_by_user(user_id):
+        await update.message.reply_text("⚠️ Not connected.")
+        return
+        
+    from opendesk.utils.app_indexer import app_indexer
+    
+    if app_indexer.is_indexing:
+        await update.message.reply_text("⏳ App indexer is currently running in the background. Please wait a moment.")
+        return
+        
+    apps = app_indexer.get_all_apps()
+    
+    if not apps:
+        await update.message.reply_text("❌ No apps found in the index yet.")
+        return
+        
+    total_apps = len(apps)
+    display_limit = 10
+    
+    # Sort and pick top apps (mostly to show common ones first if possible, or just alphabetical)
+    apps.sort(key=lambda x: x["app_name"])
+    
+    msg = f"📱 **Installed Apps** ({total_apps} found):\n"
+    for app in apps[:display_limit]:
+        msg += f"• {app['app_name'].title()} → Ready\n"
+        
+    if total_apps > display_limit:
+        msg += f"... and {total_apps - display_limit} more"
+        
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
 async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Alias for /cancel"""
     await cancel_handler(update, context)
 
 async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancels any running agent task for this chat."""
+    """Cancels any running agent task and clears the queue for this chat."""
     user_id = update.message.from_user.id
     if not is_authorized(user_id):
         return
         
     chat_id = update.message.chat_id
-    task = ACTIVE_TASKS.get(chat_id)
-    if task and not task.done():
-        task.cancel()
-        ACTIVE_TASKS.pop(chat_id, None)
-        await update.message.reply_text("🛑 Command cancelled!")
+    
+    # 1. Clear the queue
+    from opendesk.core.simple_memory import simple_memory
+    if chat_id in simple_memory.history: # Using as proxy for user known to bot
+        while not task_manager.queue.empty():
+            try:
+                task_manager.queue.get_nowait()
+                task_manager.queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+    
+    # 2. Cancel current task in TaskManager
+    cancelled = await task_manager.cancel_current_task()
+    if cancelled:
+        await update.message.reply_text("🛑 Task cancelled and queue cleared!")
     else:
         await update.message.reply_text("ℹ️ No active command to cancel.")
+    
+    # Reset paused state always on cancel to ensure responsiveness
+    USER_PAUSED_STATE[chat_id] = False
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processes incoming text by sending it to the local autonomous agent."""
+    """Entry point for incoming text: Routes to immediate execution or the command queue."""
     text = update.message.text
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
@@ -179,134 +307,89 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
         
-    # AUTHENTICATION CHECK
     if not is_authorized(user_id):
-        # Silently ignore or send a warning once? 
-        # Usually it's better to silently ignore unauthorized messages in a personal bot.
         return
 
-    session = get_session_by_user(user_id)
+    text_lower = text.lower().strip()
         
-    # AUTO-CANCEL PREVIOUS TASK
-    old_task = ACTIVE_TASKS.get(chat_id)
-    if old_task and not old_task.done():
-        logger.info(f"Auto-cancelling previous task for chat {chat_id} due to new message.")
-        old_task.cancel()
+    # PRIORITY 1: Check STOP/RESUME (Instant)
+    if text_lower in [w.lower() for w in STOP_WORDS]:
+        await cancel_handler(update, context)
+        # We set paused to False inside cancel_handler anyway, 
+        # but the user might want a moment of silence or just a stop.
+        # Following rule 5: set False immediately after cancel.
+        USER_PAUSED_STATE[chat_id] = False
+        return
 
-    logger.info(f"Received message from authorized user {chat_id}: {text}")
-    
-    # Send a processing indicator
-    try:
-        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except Exception as e:
-        logger.warning(f"Could not send typing indicator: {e}")
+    if text_lower in [w.lower() for w in RESUME_WORDS]:
+        USER_PAUSED_STATE[chat_id] = False
+        await update.message.reply_text("✅ Resumed! Ready for commands.")
+        return
 
-    # Initialize history for this chat if not present
-    if chat_id not in USER_HISTORY:
-        USER_HISTORY[chat_id] = []
-        
-    history = USER_HISTORY[chat_id]
-    
-    # Log user message
-    log_chat_message("user", text)
-    
-    try:
-        import asyncio
-        # Immediate feedback message
-        status_msg = await update.message.reply_text("⚡ Processing...")
-        
-        # New direct async call to the multi-agent supervisor system
-        agent_task = asyncio.create_task(run_agent_loop(text, history, 7))
-        ACTIVE_TASKS[chat_id] = agent_task  # Register for /cancel
-        
-        # Dynamic cycling status messages
-        async def update_status():
-            loading_messages = [
-                "🔍 Analyzing your request...",
-                "🧠 Consulting Memory Agent...",
-                "⚖️ Judge Agent verifying actions...",
-                "⚙️ Executing tools on your laptop...",
-                "📡 Communicating with AI models...",
-                "🚀 Almost there, assembling response...",
-                "⚡ Still processing (complex task)..."
-            ]
-            try:
-                for msg in loading_messages:
-                    await asyncio.sleep(4.0)
-                    if agent_task.done():
-                        break
-                    try:
-                        await status_msg.edit_text(msg)
-                    except Exception as e:
-                        logger.debug(f"Could not edit status message: {e}")
-                
-                while not agent_task.done():
-                    await asyncio.sleep(5)
-                    try:
-                        await status_msg.edit_text("⏳ OpenDesk is thinking really hard...")
-                    except Exception as e:
-                        logger.debug(f"Could not edit status message: {e}")
-                        
-            except asyncio.CancelledError:
-                # Proper cleanup on cancellation to avoid event loop errors
-                pass
-                
-        updater_task = asyncio.create_task(update_status())
-        
-        try:
-            # Wait for agent loop to complete
-            result = await agent_task
-            response_text, new_history, attachments = result
-        except asyncio.CancelledError:
-            logger.info(f"Task for chat {chat_id} was successfully cancelled.")
-            # Ensure status message is deleted and re-raise to exit handler
-            try:
-                await status_msg.delete()
-            except:
-                pass
+    if USER_PAUSED_STATE.get(chat_id, False):
+        return
+
+    # PRIORITY 2: Check INSTANT REPLIES (Fuzzy Match)
+    from thefuzz import fuzz
+    for key in INSTANT_REPLIES:
+        if key == text_lower or key in text_lower or text_lower in key or fuzz.ratio(text_lower, key) > 85:
+            await update.message.reply_text(INSTANT_REPLIES[key])
             return
-        finally:
-            updater_task.cancel()
-            try:
-                # Shield the deletion from cancellation to ensure it happens
-                await asyncio.shield(status_msg.delete())
-            except Exception:
-                pass
-            ACTIVE_TASKS.pop(chat_id, None)  # Clean up
-        
-        # Keep only the last MAX_MEMORY messages to prevent token bloat
-        USER_HISTORY[chat_id] = new_history[-MAX_MEMORY:] 
-        
-        # Send text response
-        if response_text and response_text.strip():
-            log_chat_message("assistant", response_text)
-            if len(response_text) > 4000:
-                response_text = response_text[:4000] + "\n...[truncated]"
-            await update.message.reply_text(response_text)
-            
-        # Send attachments if any tools generated files
-        for file_path in attachments:
-            if os.path.exists(file_path):
-                ext = os.path.splitext(file_path)[1].lower() # type: ignore
-                try:
-                    if ext in [".png", ".jpg", ".jpeg", ".gif"]:
-                        with open(file_path, "rb") as f:
-                            await update.message.reply_photo(photo=f)
-                    else:
-                        with open(file_path, "rb") as f:
-                            await update.message.reply_document(document=f)
-                except Exception as e:
-                    logger.error(f"Error sending attachment {file_path}: {e}")
-                    await update.message.reply_text(f"Notice: Failed to upload {os.path.basename(file_path)}")
-            else:
-                logger.warning(f"Attachment {file_path} not found on disk.")
-                
-    except Exception as e:
-        logger.error(f"Error in agent processing: {e}")
-        from opendesk.db.crud import log_error
-        import traceback
-        log_error("bot.message_handler", str(e), traceback.format_exc())
-        await update.message.reply_text(f"An error occurred while processing your request: {e}")
+
+    # PRIORITY 3: HARDCODED CHECK (0.1s Execution)
+    TIME_WORDS = [
+        "time", "what time", "current time",
+        "time is it", "time it is",
+        "kitna baja", "baje hain"
+    ]
+
+    BATTERY_WORDS = [
+        "battery", "charge", "kitni battery"
+    ]
+
+    VOLUME_WORDS = [
+        "volume", "sound level"
+    ]
+
+    if any(w in text_lower for w in TIME_WORDS):
+        now = datetime.now().strftime("%I:%M %p")
+        await update.message.reply_text(
+            f"🕐 Current time: {now}"
+        )
+        return
+
+    if any(w in text_lower for w in BATTERY_WORDS):
+        battery = psutil.sensors_battery()
+        if battery:
+            plugged = "🔌 Charging" if battery.power_plugged else "🔋 On battery"
+            await update.message.reply_text(
+                f"🔋 Battery: {battery.percent:.0f}%\n{plugged}"
+            )
+        else:
+            await update.message.reply_text("🔋 Battery information not available.")
+        return
+
+    if any(w in text_lower for w in VOLUME_WORDS):
+        await update.message.reply_text(
+            "🔊 Use: set volume to [0-100]"
+        )
+        return
+
+    # PRIORITY 4: ENQUEUE IN TASKMANAGER
+    await task_manager.add_to_queue(update, context, text)
+
+async def post_init(application):
+    """Start the global TaskManager queue processor."""
+    task_manager.processor_task = asyncio.create_task(task_manager.start_queue_processor())
+
+async def post_stop(application):
+    """Cleanly cancel the background queue processor."""
+    if task_manager.processor_task:
+        task_manager.processor_task.cancel()
+        try:
+            await task_manager.processor_task
+        except asyncio.CancelledError:
+            logger.info("TaskManager queue processor stopped cleanly.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Log the error and send a message pointing to the logs."""
@@ -318,7 +401,7 @@ def run_bot():
         logger.error("No BOT_TOKEN provided, cannot start bot.")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("status", status_handler))
@@ -327,6 +410,7 @@ def run_bot():
     app.add_handler(CommandHandler("stop", stop_handler))
     app.add_handler(CommandHandler("screenshots", screenshots_handler))
     app.add_handler(CommandHandler("getscreenshot", getscreenshot_handler))
+    app.add_handler(CommandHandler("apps", apps_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
     app.add_error_handler(error_handler)

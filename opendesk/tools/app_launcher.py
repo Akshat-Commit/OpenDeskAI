@@ -68,18 +68,30 @@ def open_app(app_name: str) -> str:
     
     if app_lower in explicit_overrides:
         try:
-            subprocess.Popen(explicit_overrides[app_lower], shell=True, cwd=os.path.expanduser("~"))
+            subprocess.Popen([explicit_overrides[app_lower]], cwd=os.path.expanduser("~"))  # noqa: S603
             time.sleep(3)
             log_app_start(explicit_overrides[app_lower])
             return f"Successfully launched '{explicit_overrides[app_lower]}' via explicit override."
         except Exception as e:
             logger.warning(f"Explicit override {explicit_overrides[app_lower]} failed: {e}")
             
+    # Step 1.5: Smart App Indexer
+    from opendesk.utils.app_indexer import app_indexer
+    indexed_path = app_indexer.find_app(app_name)
+    if indexed_path and os.path.exists(indexed_path):
+        try:
+            subprocess.Popen([indexed_path], cwd=os.path.expanduser("~"))  # noqa: S603
+            time.sleep(3)
+            log_app_start(app_name)
+            return f"Opening {app_name}!"
+        except Exception as e:
+            logger.warning(f"App indexer launch failed: {e}")
+
     # Step 2: Search the Start Menu for matching shortcut
     shortcut = _find_shortcut(app_name)
     if shortcut:
         try:
-            os.startfile(shortcut)
+            os.startfile(shortcut)  # noqa: S606
             time.sleep(3) # Wait for app to focus
             log_app_start(app_name)
             return f"Successfully launched '{app_name}' from Start Menu."
@@ -106,7 +118,7 @@ def open_app(app_name: str) -> str:
     for key, uri in uri_map.items():
         if key in app_lower:
             try:
-                os.startfile(uri)
+                os.startfile(uri)  # noqa: S606
                 time.sleep(3) # Wait for app to focus
                 log_app_start(app_name)
                 return f"Successfully launched '{app_name}' via Windows protocol."
@@ -139,7 +151,7 @@ def open_app(app_name: str) -> str:
     for key, cmd in direct_commands.items():
         if key in app_lower or app_lower in key:
             try:
-                subprocess.Popen(cmd, shell=True, cwd=os.path.expanduser("~"))
+                subprocess.Popen([cmd], cwd=os.path.expanduser("~"))  # noqa: S603
                 time.sleep(3) # Wait for app to focus
                 log_app_start(app_name)
                 return f"Successfully launched '{app_name}'."
@@ -148,7 +160,7 @@ def open_app(app_name: str) -> str:
     
     # Step 4: Last resort - try the raw name as a command
     try:
-        subprocess.Popen(app_name, shell=True, cwd=os.path.expanduser("~"))
+        subprocess.Popen([app_name], cwd=os.path.expanduser("~"))  # noqa: S603
         time.sleep(3) # Wait for app to focus
         return f"Attempted to launch '{app_name}' directly."
     except Exception as e:
@@ -200,8 +212,8 @@ def close_app(app_name: str) -> str:
             process_name += ".exe"
     
     try:
-        result = subprocess.run(
-            ["taskkill", "/im", process_name, "/f"],
+        result = subprocess.run(  # noqa: S603
+            ["taskkill", "/im", process_name, "/f"],  # noqa: S607
             capture_output=True, text=True, timeout=10
         )
         if result.returncode == 0:

@@ -20,12 +20,7 @@ def generate_session_qr(ngrok_url: str) -> str:
     token = create_session(ngrok_url)
     
     # Construct the deep link URL for Telegram
-    # The start parameter allows passing the token directly to the bot
     bot_url = f"https://t.me/{BOT_USERNAME}?start={token}"
-    
-    print("\n" + "="*50)
-    print("📱 WAITING FOR PHONE CONNECTION")
-    print("="*50 + "\n")
     
     qr = qrcode.QRCode(
         version=1,
@@ -39,9 +34,9 @@ def generate_session_qr(ngrok_url: str) -> str:
     # Print inverted for terminal readability
     qr.print_ascii(invert=True)
     
-    print("\n" + "-"*50)
-    print("Scan this QR code with your phone camera to connect.")
-    print("Session expires in 60 seconds if not scanned.")
-    print("-"*50 + "\n")
+    print("\n" + "─"*50)
+    print("  SCAN WITH PHONE CAMERA TO CONNECT")
+    print("  Link expires in 60 seconds.")
+    print("─"*50 + "\n")
     
     return token
