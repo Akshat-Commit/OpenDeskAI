@@ -74,6 +74,7 @@ You → Telegram → OpenDesk → Your Laptop
 | 🛡️ Private & Secure | Only YOU can access your machine |
 | ⚡ Fast-Lane Architecture | Instant Semantic Routing with 0-delay RAM Caching |
 | 👻 Background Daemon | Run 24/7 silently via PM2 Process Manager |
+| ⌨️ Typer CLI | Fully featured terminal interface (`opendesk start`, `logs`, `config`) |
 
 ---
 
@@ -158,16 +159,29 @@ OLLAMA_MODEL=gemma3:12b
 ---
 
 ## ▶️ Usage
-```powershell
-# First time setup
-.\run.ps1 config
+OpenDesk is controlled entirely through its new Typer CLI interface.
 
-# Check everything is working
-.\run.ps1 status
+```powershell
+# First time interactive setup
+opendesk config
+
+# Check if all systems are healthy
+opendesk status
 
 # Start OpenDesk
-.\run.ps1 start
+opendesk start
 ```
+
+### 💻 All CLI Commands
+| Command | Description | Options |
+|---------|-------------|---------|
+| `opendesk start` | Start the agent & display QR code | `--mode local/cloud`, `--debug` |
+| `opendesk stop` | Gracefully kill the running agent | None |
+| `opendesk config` | Interactive setup wizard | `--reset` |
+| `opendesk logs` | View terminal logs | `--follow`, `--errors`, `--lines 50` |
+| `opendesk status` | Show health checks | None |
+| `opendesk version` | Display tool versions | None |
+| `opendesk update` | Update from git (pip upgrade) | None |
 
 When started:
 1. Banner appears in terminal
