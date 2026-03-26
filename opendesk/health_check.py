@@ -20,7 +20,7 @@ class AnimatedSpinner:
 
     def _spin(self):
         while self.running:
-            sys.stdout.write(f"\r\033[K  \033[97m{next(self.spinner_cycle)}\033[0m  {self.message}")
+            sys.stdout.write(f"\r\033[K      \033[97m{next(self.spinner_cycle)}\033[0m  {self.message}")
             sys.stdout.flush()
             time.sleep(0.1)
 
@@ -43,7 +43,7 @@ class AnimatedSpinner:
         else:
             icon = "\033[91m❌\033[0m"
             
-        sys.stdout.write(f"\r\033[K  {icon}  {final_text}\n")
+        sys.stdout.write(f"\r\033[K      {icon}  {final_text}\n")
         sys.stdout.flush()
 
 def check_database_raw():
@@ -129,7 +129,7 @@ async def run_health_checks():
     loop = asyncio.get_event_loop()
     
     # Bold heading before checks
-    print("\n  \033[1mSYSTEM & STABILITY CHECK\033[0m\n")
+    print("\n      \033[1mSYSTEM & STABILITY CHECK\033[0m\n")
     
     for label, check_func in checks:
         # Step 1: Real checks run continuously in background thread, zero blocking

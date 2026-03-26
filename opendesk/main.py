@@ -40,12 +40,24 @@ def setup_cloudflare():
     """Starts a Cloudflare TryCloudflare tunnel to expose the local bot without session limits."""
     from pycloudflared import try_cloudflare # type: ignore
     import sys
+    import io
     
     logger.debug("Starting Cloudflare Tunnel...")
     try:
-        # try_cloudflare starts a background subprocess handling the cloudflared binary
-        # and returns a highly reliable https://*.trycloudflare.com URL routing to port 5000
-        tunnel = try_cloudflare(port=5000)
+        # Intercept pycloudflared's hardcoded print statements to add our UI margin
+        old_stdout = sys.stdout
+        sys.stdout = captured = io.StringIO()
+        
+        try:
+            tunnel = try_cloudflare(port=5000)
+        finally:
+            sys.stdout = old_stdout
+            
+        # Pad the intercepted output
+        for line in captured.getvalue().split("\n"):
+            if line.strip():
+                print("      " + line)
+                
         public_url = tunnel.tunnel
         logger.debug(f"Cloudflare tunnel active at: {public_url}")
         return public_url, tunnel

@@ -31,12 +31,21 @@ def generate_session_qr(ngrok_url: str) -> str:
     qr.add_data(bot_url)
     qr.make(fit=True)
     
-    # Print inverted for terminal readability
-    qr.print_ascii(invert=True)
+    import io
+    import shutil
     
-    print("\n" + "─"*50)
-    print("  SCAN WITH PHONE CAMERA TO CONNECT")
-    print("  Link expires in 60 seconds.")
-    print("─"*50 + "\n")
+    # Capture the QR code and print it with a left margin
+    f = io.StringIO()
+    qr.print_ascii(out=f, invert=True)
+    qr_str = f.getvalue()
+    for line in qr_str.split("\n"):
+        if line.strip() or line: # Prevent printing useless empty newlines
+            print("      " + line)
+    
+    cols = shutil.get_terminal_size().columns
+    print("\n" + "─" * cols)
+    print("      SCAN WITH PHONE CAMERA TO CONNECT")
+    print("      Link expires in 60 seconds.")
+    print("─" * cols + "\n")
     
     return token

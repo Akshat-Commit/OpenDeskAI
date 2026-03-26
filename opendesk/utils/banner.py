@@ -1,15 +1,16 @@
 from rich.console import Console
 import shutil
 
-console = Console()
+# Force console to use exact terminal width to prevent collapsing
+console = Console(width=shutil.get_terminal_size().columns)
 
 OPENDESK_ART = """
-░█████╗░██████╗░███████╗███╗░░██╗██████╗░███████╗░██████╗██╗░░██╗
-██╔══██╗██╔══██╗██╔════╝████╗░██║██╔══██╗██╔════╝██╔════╝██║░██╔╝
-██║░░██║██████╔╝█████╗░░██╔██╗██║██║░░██║█████╗░░╚█████╗░█████═╝░
-██║░░██║██╔═══╝░██╔══╝░░██║╚████║██║░░██║██╔══╝░░░╚═══██╗██╔═██╗░
-╚█████╔╝██║░░░░░███████╗██║░╚███║██████╔╝███████╗██████╔╝██║░╚██╗
-░╚════╝░╚═╝░░░░░╚══════╝╚═╝░░╚══╝╚═════╝░╚══════╝╚═════╝░╚═╝░░╚═╝
+      ░█████╗░██████╗░███████╗███╗░░██╗██████╗░███████╗░██████╗██╗░░██╗
+      ██╔══██╗██╔══██╗██╔════╝████╗░██║██╔══██╗██╔════╝██╔════╝██║░██╔╝
+      ██║░░██║██████╔╝█████╗░░██╔██╗██║██║░░██║█████╗░░╚█████╗░█████═╝░
+      ██║░░██║██╔═══╝░██╔══╝░░██║╚████║██║░░██║██╔══╝░░░╚═══██╗██╔═██╗░
+      ╚█████╔╝██║░░░░░███████╗██║░╚███║██████╔╝███████╗██████╔╝██║░╚██╗
+      ░╚════╝░╚═╝░░░░░╚══════╝╚═╝░░╚══╝╚═════╝░╚══════╝╚═════╝░╚═╝░░╚═╝
 """
 
 def show_banner():
@@ -21,7 +22,7 @@ def show_banner():
     
     # Version line in uppercase - Monochromatic
     console.print(
-        "  V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/AKSHAT-COMMIT/OPENDESK",
+        "        V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/AKSHAT-COMMIT/OPENDESK",
         style="dim white"
     )
     console.print()
@@ -58,8 +59,8 @@ def show_health_footer():
 def show_completion_banner():
     """Shows a simple, clean, non-blocking completion message."""
     console.print(
-        "\n  [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"
+        "\n      [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"
     )
     console.print(
-        "  [dim white]Generating secure session link...[/dim white]\n"
+        "      [dim white]Generating secure session link...[/dim white]\n"
     )
