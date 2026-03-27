@@ -32,8 +32,15 @@ class JudgeAgent:
         Pre-generates a strict grading rubric based on the user's command.
         """
         prompt = f"""
-        You are the JUDGE for an AI Assistant that controls a Windows PC.
+        You are the JUDGE for an AI Assistant called OpenDesk that controls a Windows PC.
         The user has given the following command: "{command}"
+        
+        IMPORTANT CONTEXT — OpenDesk capabilities:
+        - "Share", "send", or "give me" a file = the agent sends it as a Telegram attachment using the share_file tool. It does NOT use email or cloud storage.
+        - "Find" a file = the agent uses find_user_file tool to search the local PC.
+        - "Summarise" or "read" a file = the agent uses read_document tool to extract text.
+        - "Open" an app = the agent uses app_launcher tool.
+        - File sharing SUCCESS means: share_file tool was called and the file was uploaded to Telegram.
         
         Before the agent executes this, define STRICT, specific criteria for success.
         What tools MUST be used? What exact outcome is expected?
@@ -75,6 +82,13 @@ class JudgeAgent:
         3. "task_completed": true if the final result satisfies the PRE-COMPUTED STRICT CRITERIA.
         4. "correction": If failure, explain EXACTLY what happened.
         
+        CRITICAL OPENDESK CONTEXT — how this agent works:
+        - "Share", "send", or "give me" a file = SUCCESS means share_file tool was called and sent via Telegram. Do NOT expect email, Google Drive, OneDrive or any cloud upload.
+        - "Find" a file = find_user_file tool must be called.
+        - "Summarise"/"read" a document = read_document tool must return content.
+        - "Open" an app = app_launcher must be called.
+        - File sharing is COMPLETE if share_file was called and returned success — regardless of whether the file came from a local path.
+
         EVALUATION RULES:
         - Be lenient with formatting differences
         - 2+2 and 2 + 2 are equivalent
