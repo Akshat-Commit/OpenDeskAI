@@ -22,3 +22,14 @@ data/
 opendesk.egg-info/
 tests/test_full_agent.py
 error_trace.log
+
+# Generated/temporary output files
+ruff*.txt
+ruff*.json
+test*.txt
+test*.json
+trace*.txt
+safety_report.txt
+battery-report.html
+opendesk/utils/*.html
+webpage.html
