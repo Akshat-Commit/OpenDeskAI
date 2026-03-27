@@ -329,10 +329,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if USER_PAUSED_STATE.get(chat_id, False):
         return
 
-    # PRIORITY 2: Check INSTANT REPLIES (Fuzzy Match)
+    # PRIORITY 2: Check INSTANT REPLIES (exact or near-exact full message only)
     from thefuzz import fuzz
     for key in INSTANT_REPLIES:
-        if key == text_lower or key in text_lower or text_lower in key or fuzz.ratio(text_lower, key) > 85:
+        # Only match if the WHOLE message IS the key — never on substrings
+        if text_lower == key or fuzz.ratio(text_lower, key) > 90:
             await update.message.reply_text(INSTANT_REPLIES[key])
             return
 
