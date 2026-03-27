@@ -151,10 +151,10 @@ copy .env.example .env
 ```
 
 Now open `.env` and fill in:
-TELEGRAM_BOT_TOKEN=your_token_here
-TELEGRAM_BOT_USERNAME=your_bot_username
+BOT_TOKEN=your_token_here
+BOT_USERNAME=your_bot_username
 ALLOWED_TELEGRAM_ID=your_telegram_id
-OLLAMA_MODEL=gemma3:12b
+OLLAMA_MODEL_NAME=gemma3:12b
 
 ---
 

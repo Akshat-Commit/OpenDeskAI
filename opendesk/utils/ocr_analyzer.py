@@ -5,38 +5,38 @@ from datetime import datetime
 from loguru import logger
 from PIL import Image
 import pytesseract
+from opendesk.db.connection import db
 
-# Point to Tesseract installation
-pytesseract.pytesseract.tesseract_cmd = (
+import shutil
+
+# Detect Tesseract binary at runtime:
+# 1. Honour an explicit env var override
+# 2. Try to locate it on PATH via shutil.which
+# 3. Fall back to the standard Windows install location
+_tesseract_cmd = (
+    os.environ.get("TESSERACT_CMD") or
+    os.environ.get("TESSERACT_PATH") or
+    shutil.which("tesseract") or
     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
 
+if not os.path.isfile(_tesseract_cmd) and not shutil.which("tesseract"):
+    logger.warning(
+        f"Tesseract not found at '{_tesseract_cmd}'. "
+        "OCR features will be disabled. "
+        "Install Tesseract or set TESSERACT_CMD env var."
+    )
+
+pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
+
 class OCRAnalyzer:
     
-    def __init__(self, db_path="opendesk.db"):
-        self.db_path = db_path
-        self._setup_db()
+    def __init__(self):
+        # Use the singleton DB — schema.sql already defines screenshot_ocr
+        db.connect()
     
     def _setup_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS
-            screenshot_ocr (
-                id INTEGER PRIMARY KEY,
-                screenshot_path TEXT UNIQUE,
-                extracted_text TEXT,
-                keywords TEXT,
-                captured_at TEXT,
-                analyzed_at TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS
-            idx_ocr_text ON 
-            screenshot_ocr(extracted_text)
-        """)
-        conn.commit()
-        conn.close()
+        # Schema is managed centrally in db/schema.sql — no setup needed here
         logger.debug("OCR database ready")
     
     def extract_text(self, image_path: str) -> str:
@@ -103,10 +103,11 @@ class OCRAnalyzer:
             logger.warning("No text found in screenshot")
             return {}
         
-        # Save to database
+        # Save to database via the singleton connection
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("""
+            conn = db.get_cursor().connection if hasattr(db.get_cursor(), 'connection') else db.connect()
+            cursor = db.get_cursor()
+            cursor.execute("""
                 INSERT OR REPLACE INTO
                 screenshot_ocr
                 (screenshot_path, extracted_text,
@@ -119,8 +120,7 @@ class OCRAnalyzer:
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
-            conn.commit()
-            conn.close()
+            db.commit()
             
             logger.info(f"OCR saved! Found {len(text)} characters")
             
@@ -145,9 +145,9 @@ class OCRAnalyzer:
         logger.info("OCR analysis started in background")
     
     def search_screenshots(self, query: str) -> list:
-        conn = sqlite3.connect(self.db_path)
+        cursor = db.get_cursor()
         
-        results = conn.execute("""
+        results = cursor.execute("""
             SELECT screenshot_path,
                    extracted_text,
                    captured_at
@@ -161,19 +161,17 @@ class OCRAnalyzer:
             f"%{query}%"
         )).fetchall()
         
-        conn.close()
         return results
     
     def get_screenshot_text(self, screenshot_path: str) -> str:
-        conn = sqlite3.connect(self.db_path)
+        cursor = db.get_cursor()
         
-        result = conn.execute("""
+        result = cursor.execute("""
             SELECT extracted_text
             FROM screenshot_ocr
             WHERE screenshot_path = ?
         """, (screenshot_path,)).fetchone()
         
-        conn.close()
         return result[0] if result else ""
 
 # Global instance

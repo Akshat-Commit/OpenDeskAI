@@ -231,7 +231,7 @@ async def getscreenshot_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def apps_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows all indexed apps from the AppIndexer."""
-    user_id = update.message.fromuser.id if hasattr(update.message, 'from_user') else update.message.from_user.id
+    user_id = update.message.from_user.id if hasattr(update.message, 'from_user') else None
     if not is_authorized(user_id):
         return
         

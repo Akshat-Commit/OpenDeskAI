@@ -143,21 +143,32 @@ class JudgeAgent:
                     logger.warning(f"Judge rate limited (429). Retrying in {wait_time}s... (Attempt {attempt+1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
+                    # Check if this is a JSON parse error — fail closed
+                    if isinstance(e, (json.JSONDecodeError, ValueError)):
+                        logger.error(f"Judge returned malformed JSON (fail-closed): {e}")
+                        return {
+                            "hallucinated": True,
+                            "tool_called": False,
+                            "task_completed": False,
+                            "confidence": 1,
+                            "correction": f"Judge returned unparseable response: {e}"
+                        }
                     logger.error(f"Judge evaluation failed: {e}")
                     return {
                         "hallucinated": False,
                         "tool_called": True,
-                        "task_completed": True,
-                        "confidence": 5,
-                        "correction": f"Judge error: {e}"
+                        "task_completed": False,
+                        "confidence": 3,
+                        "correction": f"Judge error (fail-closed): {e}"
                     }
                     
+        # All retries exhausted due to rate limits — fail closed
         return {
             "hallucinated": False,
             "tool_called": True,
-            "task_completed": True,
-            "confidence": 5,
-            "correction": "Judge failed after max retries due to rate limits."
+            "task_completed": False,
+            "confidence": 2,
+            "correction": "Judge failed after max retries due to rate limits. Treating as unverified."
         }
 
 judge_agent = JudgeAgent()

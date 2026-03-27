@@ -34,7 +34,8 @@ class DatabaseConnection:
         return self.connection
 
     def _initialize_schema(self):
-        assert self.connection is not None  # noqa: S101
+        if self.connection is None:
+            raise RuntimeError("_initialize_schema called before a connection was established.")
         try:
             schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
             if os.path.exists(schema_path):
@@ -54,7 +55,8 @@ class DatabaseConnection:
     def get_cursor(self):
         if self.connection is None:
             self.connect()
-        assert self.connection is not None  # noqa: S101
+        if self.connection is None:
+            raise RuntimeError("Failed to establish a database connection. Check your database path and permissions.")
         return self.connection.cursor()
 
     def commit(self):

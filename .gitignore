@@ -10,9 +10,13 @@ logs/
 __pycache__/
 *.pyc
 ecosystem.config.js
-*.txt
-*.json
-*.html
+# Scoped ignores (not global wildcards)
+dist/*.json
+build/*.json
+generated/**/*.json
+# Ignore temp html output files
+data/**/*.html
+tmp/**/*.html
 tmp/
 data/
 opendesk.egg-info/
