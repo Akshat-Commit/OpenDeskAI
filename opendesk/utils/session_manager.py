@@ -35,7 +35,7 @@ def create_session(ngrok_url: str) -> str:
         "created_at": now,
         "expires_at": now + SESSION_EXPIRY_SECONDS
     }
-    logger.info(f"Created new connection session token (expires in {SESSION_EXPIRY_SECONDS}s)")
+    logger.debug(f"Created new connection session token (expires in {SESSION_EXPIRY_SECONDS}s)")
     return token
 
 def is_session_valid(token: str) -> bool:

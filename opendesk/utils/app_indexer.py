@@ -112,7 +112,7 @@ class AppIndexer:
         return count
 
     def _scan_start_menu(self):
-        logger.info("Scanning Start Menu for apps...")
+        logger.debug("Scanning Start Menu for apps...")
         count = 0
         import win32com.client
         shell = win32com.client.Dispatch("WScript.Shell")
@@ -143,7 +143,7 @@ class AppIndexer:
         return count
 
     def _scan_desktop(self):
-        logger.info("Scanning Desktops for apps...")
+        logger.debug("Scanning Desktops for apps...")
         count = 0
         import win32com.client
         shell = win32com.client.Dispatch("WScript.Shell")
@@ -202,7 +202,7 @@ class AppIndexer:
             total += self._scan_start_menu()
             
             duration = time.time() - start_time
-            logger.info(f"App indexing complete in {duration:.1f}s. Indexed {total} apps.")
+            logger.debug(f"App indexing complete in {duration:.1f}s. Indexed {total} apps.")
         except Exception as e:
             logger.error(f"App indexing failed: {e}")
         finally:

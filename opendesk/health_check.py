@@ -37,7 +37,7 @@ class AnimatedSpinner:
             self.spinner_thread.join()
         
         if status == "success":
-            icon = "\033[92m✅\033[0m"
+            icon = "\033[92m●\033[0m"
         elif status == "warning":
             icon = "\033[93m⚠️ \033[0m" 
         else:
