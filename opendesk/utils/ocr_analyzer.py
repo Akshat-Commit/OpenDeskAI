@@ -37,7 +37,7 @@ class OCRAnalyzer:
         """)
         conn.commit()
         conn.close()
-        logger.info("OCR database ready")
+        logger.debug("OCR database ready")
     
     def extract_text(self, image_path: str) -> str:
         try:

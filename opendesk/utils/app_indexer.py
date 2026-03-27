@@ -179,7 +179,7 @@ class AppIndexer:
             return
             
         self.is_indexing = True
-        logger.info("Started background app indexing...")
+        logger.debug("Started background app indexing...")
         start_time = time.time()
         
         try:
@@ -191,7 +191,7 @@ class AppIndexer:
             if last_app:
                 last_time = datetime.strptime(last_app[0], "%Y-%m-%d %H:%M")
                 if (datetime.now() - last_time).days < 1:
-                    logger.info("App index is fresh. Skipping scan.")
+                    logger.debug("App index is fresh. Skipping scan.")
                     self.is_indexing = False
                     return
 
@@ -215,7 +215,7 @@ class AppIndexer:
             name="AppIndexer"
         )
         thread.start()
-        logger.info("App indexer started in background")
+        logger.debug("App indexer started in background")
 
     def find_app(self, app_name: str) -> Optional[str]:
         conn = sqlite3.connect(self.db_path)

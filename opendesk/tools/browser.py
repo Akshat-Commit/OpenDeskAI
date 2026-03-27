@@ -1,66 +1,100 @@
-from selenium import webdriver # type: ignore
-from selenium.webdriver.chrome.service import Service as ChromeService # type: ignore
-from selenium.webdriver.common.by import By # type: ignore
-from webdriver_manager.chrome import ChromeDriverManager # type: ignore
-from .registry import register_tool
+import re
+from loguru import logger
+from opendesk.tools.registry import register_tool
+from bs4 import BeautifulSoup
 
+import urllib.parse
 
-
-# Keep a global reference to the browser so it stays open across tool calls
-_browser_instance = None
-
-def _get_browser():
-    global _browser_instance
-    if _browser_instance is None:
-        options = webdriver.ChromeOptions()
-        # options.add_argument("--headless=new") # Make visible for desktop automation
-        service = ChromeService(ChromeDriverManager().install())
-        _browser_instance = webdriver.Chrome(service=service, options=options)
-    return _browser_instance
-
-@register_tool("open_url")
-def open_url(url: str) -> str:
-    """Opens a URL in the Chrome browser."""
-    import os
+@register_tool("search_web")
+def search_web(query: str, max_results: int = 5) -> str:
+    """Searches the internet for the given query and returns top results with URLs and snippets."""
     try:
-        browser = _get_browser()
+        from playwright.sync_api import sync_playwright
         
-        # Handle local Windows file paths correctly
-        if os.path.exists(url) and os.path.isabs(url):
-            url = "file:///" + url.replace("\\", "/")
-        elif url.startswith("file://"):
-            # Ensure correct format for Windows: file:///C:/...
-            if not url.startswith("file:///"):
-                url = url.replace("file://", "file:///")
-        elif not (url.startswith("http://") or url.startswith("https://")):
-            url = "https://" + url
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
             
-        browser.get(url)
-        return f"Successfully opened {url}. Page title: {browser.title}"
+            search_url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
+            page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+            
+            html_content = page.content()
+            browser.close()
+            
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        results = []
+        for li in soup.find_all('li', class_='b_algo', limit=max_results):
+            title_node = li.find('h2')
+            if not title_node: continue
+            
+            a_node = title_node.find('a')
+            if not a_node: continue
+            
+            title = a_node.text.strip()
+            link = a_node.get('href', '')
+            
+            snippet_node = li.find('p')
+            snippet = snippet_node.text.strip() if snippet_node else "No snippet"
+            
+            results.append(f"[{title}]({link})\n   Snippet: {snippet}")
+            
+        if not results:
+            return f"No results found for '{query}'. The search engine might be blocking automated requests."
+            
+        output = f"Top {len(results)} search results for '{query}':\n\n"
+        for i, res in enumerate(results, 1):
+            output += f"{i}. {res}\n\n"
+        return output
     except Exception as e:
-        return f"Error opening URL '{url}': {e}"
+        logger.error(f"Error searching web: {e}")
+        return f"Error searching the web: {e}"
 
-@register_tool("read_browser_text")
-def read_browser_text() -> str:
-    """Reads the visible text from the currently open body paragraph."""
+@register_tool("read_webpage")
+def read_webpage(url: str) -> str:
+    """Navigates to a webpage, renders JavaScript, and extracts the visible text content."""
     try:
-        if _browser_instance is None:
-            return "No browser is currently open. Use open_url first."
-        body = _browser_instance.find_element(By.TAG_NAME, "body")
-        text = body.text[:2000] # Limit to 2000 chars to avoid overwhelming LLM
-        return f"Visible text (first 2000 chars):\n{text}"
+        from playwright.sync_api import sync_playwright
+        
+        with sync_playwright() as p:
+            # We use an invisible headless browser to avoid annoying the user
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
+            
+            # Wait until the basic DOM is loaded (timeout 15s to not block the bot forever)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            except Exception as nav_e:
+                logger.warning(f"Playwright navigation interrupted, but continuing to scrape what landed: {nav_e}")
+            
+            html_content = page.content()
+            browser.close()
+            
+        # Parse the raw HTML into beautiful, clean text
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Brutally scrub out all useless visual layout junk (menus, scripts, ads)
+        for junk in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe", "aside"]):
+            junk.decompose()
+            
+        # Get only the text that a human would actually read
+        text = soup.get_text(separator=' ', strip=True)
+        
+        # Collapse massive white spaces into single spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Safety Lock: We must truncate giant webpages so we don't crash the LLM's context window
+        if len(text) > 8000:
+            text = text[:8000] + "\n\n...[Content truncated to save AI memory]"
+            
+        return text if text else "Page loaded successfully, but no readable text was found."
+        
     except Exception as e:
-        return f"Error reading text from browser: {e}"
-
-@register_tool("close_browser")
-def close_browser() -> str:
-    """Closes the current Chrome browser instance."""
-    global _browser_instance
-    try:
-        if _browser_instance:
-            _browser_instance.quit()
-            _browser_instance = None
-            return "Browser closed successfully."
-        return "No browser instance was open."
-    except Exception as e:
-        return f"Error closing browser: {e}"
+        logger.error(f"Error reading webpage {url}: {e}")
+        return f"Failed to successfully render and read webpage: {e}"

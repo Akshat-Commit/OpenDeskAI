@@ -10,6 +10,7 @@ from . import app_launcher
 from . import context
 from . import document_reader
 from . import python_execution
+from . import clipboard
 
 __all__ = [
     "register_tool", 
@@ -23,5 +24,6 @@ __all__ = [
     "app_launcher",
     "context",
     "document_reader",
-    "python_execution"
+    "python_execution",
+    "clipboard"
 ]

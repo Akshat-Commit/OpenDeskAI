@@ -1,4 +1,3 @@
 # OpenDesk AI Package
-from opendesk.main import run_opendesk
-
-__all__ = ["run_opendesk"]
+# Do not import heavily nested submodules here to prevent premature OS environment caching.
+__all__ = []
