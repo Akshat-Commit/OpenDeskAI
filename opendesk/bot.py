@@ -17,6 +17,33 @@ import psutil
 from opendesk.core.task_manager import task_manager # type: ignore
 USER_PAUSED_STATE: Dict[int, bool] = {}
 
+# Human-in-the-loop: pending confirmation actions per chat_id
+# Supports two modes:
+#   type="confirm"         → simple YES/NO gate
+#   type="whatsapp_share"  → contact selection with optional screenshot
+PENDING_ACTIONS: Dict[int, dict] = {}
+
+def set_pending_action(
+    chat_id: int,
+    action_description: str,
+    original_command: str,
+    action_type: str = "confirm",
+    screenshot_path: str = None,
+    file_name: str = None,
+    contact_name: str = None,
+    found_contacts: list = None,
+):
+    """Register a pending action requiring user confirmation or contact selection."""
+    PENDING_ACTIONS[chat_id] = {
+        "type": action_type,
+        "action": action_description,
+        "original_command": original_command,
+        "screenshot_path": screenshot_path,
+        "file_name": file_name,
+        "contact_name": contact_name,
+        "found_contacts": found_contacts or [],
+    }
+
 INSTANT_REPLIES = {
     # Greetings
     "hello": "Hey! OpenDesk here! How can I help?",
@@ -328,6 +355,85 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if USER_PAUSED_STATE.get(chat_id, False):
         return
+
+    # PRIORITY 1.5: Human-in-the-loop confirmation handler
+    if chat_id in PENDING_ACTIONS:
+        pending = PENDING_ACTIONS[chat_id]
+        is_yes = text_lower in ["yes", "y", "haan", "ha", "confirm", "ok", "okay"]
+        is_no  = text_lower in ["no", "n", "nahi", "nope", "cancel", "stop", "abort"]
+
+        if pending.get("type") == "whatsapp_share":
+            found = pending.get("found_contacts", [])
+
+            if is_no:
+                del PENDING_ACTIONS[chat_id]
+                await update.message.reply_text("❌ Cancelled. Nothing was sent.")
+                return
+
+            # Check if user typed a number to select from list
+            selected_contact = None
+            if text_lower.isdigit():
+                idx = int(text_lower) - 1
+                if 0 <= idx < len(found):
+                    selected_contact = found[idx]
+
+            # Or if user typed a name that matches one of the found contacts
+            if not selected_contact:
+                for c in found:
+                    if text_lower in c.lower() or c.lower() in text_lower:
+                        selected_contact = c
+                        break
+
+            # YES with single result → confirm first contact
+            if is_yes and len(found) <= 1:
+                selected_contact = found[0] if found else pending.get("contact_name", "")
+
+            if selected_contact:
+                del PENDING_ACTIONS[chat_id]
+                await update.message.reply_text(f"✅ Sending to **{selected_contact}**...", parse_mode="Markdown")
+                confirmed_cmd = (
+                    f"[USER SELECTED CONTACT: {selected_contact}] "
+                    f"{pending['original_command']}"
+                )
+                await task_manager.add_to_queue(update, context, confirmed_cmd)
+                return
+
+            # Multiple contacts found — ask user to pick one
+            if found:
+                options = "\n".join(f"{i+1}. {c}" for i, c in enumerate(found))
+                await update.message.reply_text(
+                    f"📋 **Multiple matches found:**\n{options}\n\n"
+                    f"Reply with the **number** or **exact name** of the person to send to, "
+                    f"or **NO** to cancel.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ Could not match that name. Reply **NO** to cancel, "
+                    f"or type the exact contact name.",
+                    parse_mode="Markdown"
+                )
+            return
+
+        else:
+            # Simple YES/NO confirm mode
+            if is_yes:
+                del PENDING_ACTIONS[chat_id]
+                await update.message.reply_text("✅ Confirmed! Proceeding...")
+                approved_command = f"[USER CONFIRMED] {pending['original_command']}"
+                await task_manager.add_to_queue(update, context, approved_command)
+                return
+            elif is_no:
+                del PENDING_ACTIONS[chat_id]
+                await update.message.reply_text("❌ Cancelled. Action aborted.")
+                return
+            else:
+                await update.message.reply_text(
+                    f"⚠️ Waiting for confirmation:\n`{pending['action']}`\n\n"
+                    f"Reply **YES** to proceed or **NO** to cancel.",
+                    parse_mode="Markdown"
+                )
+                return
 
     # PRIORITY 2: Check INSTANT REPLIES (exact or near-exact full message only)
     from thefuzz import fuzz

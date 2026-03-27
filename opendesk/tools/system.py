@@ -494,3 +494,147 @@ def search_screenshots(query: str) -> str:
         )
     
     return response
+
+# Thread-local storage to pass chat_id from bot to tools
+import threading
+_tool_context = threading.local()
+
+def set_tool_chat_id(chat_id: int):
+    """Called by the bot before invoking the agent to pass the current chat_id to tools."""
+    _tool_context.chat_id = chat_id
+
+@register_tool("request_confirmation")
+def request_confirmation(action_description: str, original_command: str) -> str:
+    """
+    SAFETY GATE: Call this BEFORE using WhatsApp, Gmail, or any app to share/send anything.
+    Sends a YES/NO confirmation to the user on Telegram and pauses execution.
+    
+    Args:
+        action_description: Human-readable description of what you are about to do.
+                           E.g. "Send jai.pdf to Rahul on WhatsApp"
+        original_command: The original user command to re-execute if confirmed.
+    
+    Returns "AWAITING_CONFIRMATION" — you MUST stop after calling this tool and wait.
+    """
+    chat_id = getattr(_tool_context, "chat_id", None)
+    if chat_id is None:
+        return "CONFIRMATION_SKIPPED: No chat context available. Proceed with caution."
+    
+    try:
+        from opendesk.bot import set_pending_action
+        set_pending_action(chat_id, action_description, original_command)
+        logger.info(f"Confirmation requested for chat {chat_id}: {action_description}")
+        return (
+            f"AWAITING_CONFIRMATION: I asked the user for confirmation.\n"
+            f"Action: {action_description}\n"
+            f"STOP HERE. Do not proceed until user replies YES."
+        )
+    except Exception as e:
+        logger.error(f"Failed to set pending action: {e}")
+        return f"CONFIRMATION_FAILED: {e}. Use caution before proceeding."
+
+@register_tool("search_and_confirm_whatsapp_share")
+def search_and_confirm_whatsapp_share(file_name: str, contact_name: str, original_command: str) -> str:
+    """
+    Smart WhatsApp file share with human-in-the-loop contact confirmation.
+    
+    Flow:
+    1. Opens WhatsApp Desktop
+    2. Searches for the contact by name
+    3. Takes a screenshot of the results
+    4. Sends screenshot to user on Telegram asking for confirmation
+    5. Returns AWAITING_CONFIRMATION — STOP here and wait for user reply
+
+    Use this instead of manually opening WhatsApp and clicking contacts.
+    ALWAYS use this tool when the user wants to share/send something via WhatsApp.
+
+    Args:
+        file_name: Name of the file to share (e.g. "jai.pdf")
+        contact_name: Name of the contact to search for (e.g. "Rahul")
+        original_command: The original user command verbatim
+    """
+    import time as _time
+    import os as _os
+    import pyautogui as _pag
+    from datetime import datetime as _dt
+    from PIL import ImageGrab as _IG
+
+    chat_id = getattr(_tool_context, "chat_id", None)
+    if chat_id is None:
+        return "CONFIRMATION_SKIPPED: No chat context. Proceed manually."
+
+    try:
+        # Step 1: Open WhatsApp
+        import subprocess
+        subprocess.Popen(["explorer.exe", "whatsapp:"])  # noqa: S603
+        _time.sleep(3)
+
+        # Step 2: Open search bar (Ctrl+F in WhatsApp Desktop)
+        _pag.hotkey("ctrl", "f")
+        _time.sleep(1)
+
+        # Step 3: Type the contact name
+        _pag.typewrite(contact_name, interval=0.05)
+        _time.sleep(2)
+
+        # Step 4: Screenshot the search results
+        screenshot_dir = _os.path.join(_os.path.expanduser("~"), "AppData", "Local", "OpenDesk", "screenshots")
+        _os.makedirs(screenshot_dir, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_path = _os.path.join(screenshot_dir, f"wa_search_{ts}.png")
+
+        img = _IG.grab()
+        img.save(screenshot_path)
+
+        # Step 5: Use OCR to extract contact names from the results area
+        found_contacts = []
+        try:
+            import pytesseract
+            from PIL import Image
+            # Crop left third of screen (WhatsApp contact list panel)
+            width, height = img.size
+            cropped = img.crop((0, int(height * 0.1), int(width * 0.35), int(height * 0.9)))
+            raw_text = pytesseract.image_to_string(cropped)
+            # Extract lines that look like names (non-empty, no special chars)
+            for line in raw_text.split("\n"):
+                line = line.strip()
+                if len(line) > 2 and line.replace(" ", "").replace("-", "").isalpha():
+                    if contact_name.lower() in line.lower() or line.lower() in contact_name.lower():
+                        found_contacts.append(line)
+            found_contacts = list(dict.fromkeys(found_contacts))[:5]  # dedupe, max 5
+        except Exception as ocr_e:
+            logger.debug(f"OCR contact extraction failed: {ocr_e}")
+
+        # Step 6: Register pending action with screenshot for Telegram
+        from opendesk.bot import set_pending_action
+        set_pending_action(
+            chat_id=chat_id,
+            action_description=f"Send {file_name} to {contact_name} on WhatsApp",
+            original_command=original_command,
+            action_type="whatsapp_share",
+            screenshot_path=screenshot_path,
+            file_name=file_name,
+            contact_name=contact_name,
+            found_contacts=found_contacts,
+        )
+
+        logger.info(f"WhatsApp search done. Found {len(found_contacts)} contacts. Screenshot at {screenshot_path}")
+
+        if found_contacts:
+            contacts_str = ", ".join(found_contacts)
+            return (
+                f"AWAITING_CONFIRMATION: Searched WhatsApp for '{contact_name}'.\n"
+                f"Found contacts: {contacts_str}\n"
+                f"Screenshot sent to user for confirmation.\n"
+                f"STOP HERE — wait for user to reply with the contact name."
+            )
+        else:
+            return (
+                f"AWAITING_CONFIRMATION: Searched WhatsApp for '{contact_name}'.\n"
+                f"Could not auto-read contact names — screenshot sent to user.\n"
+                f"STOP HERE — wait for user to confirm the correct contact."
+            )
+
+    except Exception as e:
+        logger.error(f"search_and_confirm_whatsapp_share failed: {e}")
+        return f"ERROR: Could not open WhatsApp or search for '{contact_name}': {e}"
