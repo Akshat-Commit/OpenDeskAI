@@ -188,38 +188,123 @@ def capture_video(duration: int = 5, save_path: str = None) -> str:
             cap.release()
 
 @register_tool("send_whatsapp_message")
-def send_whatsapp_message(contact_name: str, message: str) -> str:
-    """A highly reliable macro that opens WhatsApp desktop, searches for the exact contact name, and sends them a message."""
+def send_whatsapp_message(
+    contact_name: str,
+    message: str = ""
+) -> str:
+    """
+    Opens WhatsApp Desktop and sends
+    a text message to a contact.
+    Use ONLY for text messages.
+    NOT for file sharing.
+    """
+    import subprocess
+    import time
+    import pyautogui
+    import pyperclip
+    
     try:
-        # 1. Open WhatsApp via Windows URI
-        subprocess.run(["cmd", "/c", "start", "whatsapp:"])  # noqa: S607
-        # Give WhatsApp plenty of time to launch and focus
-        time.sleep(5)
+        # Open WhatsApp
+        subprocess.Popen(["whatsapp:"], shell=True)  # noqa: S602, S607
+        time.sleep(3)
         
-        # 2. Focus the search bar (Ctrl+F in WhatsApp Desktop)
+        # Search for contact
         pyautogui.hotkey('ctrl', 'f')
         time.sleep(1)
-        
-        # 3. Type contact name to search
-        pyautogui.write(contact_name, interval=0.05)
-        time.sleep(2.5) # Wait for search results to filter
-        
-        # 4. Press Enter to select the top contact and focus message box
+        pyautogui.typewrite(
+            contact_name,
+            interval=0.05
+        )
+        time.sleep(2)
         pyautogui.press('enter')
         time.sleep(1)
         
-        # 5. Type the actual message
-        pyautogui.write(message, interval=0.02)
-        time.sleep(0.5)
+        # Type and send message
+        if message:
+            pyperclip.copy(message)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.5)
+            pyautogui.press('enter')
         
-        # 6. Press Enter to send!
-        pyautogui.press('enter')
-        time.sleep(1)
-        
-        return f"Successfully executed WhatsApp macro: Sent '{message}' to '{contact_name}'."
+        return (
+            f"Message sent to "
+            f"{contact_name} on WhatsApp"
+        )
     except Exception as e:
-        logger.error(f"WhatsApp macro failed: {e}")
-        return f"Error executing WhatsApp macro: {e}"
+        return f"WhatsApp error: {e}"
+
+@register_tool("send_whatsapp_file")
+def send_whatsapp_file(
+    contact_name: str,
+    filename: str
+) -> str:
+    """
+    Finds a file and sends it to a
+    contact on WhatsApp Desktop.
+    Use when user says:
+    send [file] to [person] on whatsapp
+    share [file] with [person] on whatsapp
+    """
+    import subprocess
+    import time
+    import pyautogui
+    import pyperclip
+    from opendesk.utils.file_indexer import (
+        file_indexer
+    )
+    
+    try:
+        # Step 1: Find the file
+        results = file_indexer.find_file(
+            filename
+        )
+        
+        if not results:
+            return (
+                f"Could not find {filename}. "
+                f"Please check the filename."
+            )
+        
+        file_path = results[0][0]
+        
+        # Step 2: Open WhatsApp
+        subprocess.Popen(["whatsapp:"], shell=True)  # noqa: S602, S607
+        time.sleep(3)
+        
+        # Step 3: Search contact
+        pyautogui.hotkey('ctrl', 'f')
+        time.sleep(1)
+        pyautogui.typewrite(
+            contact_name,
+            interval=0.05
+        )
+        time.sleep(2)
+        pyautogui.press('enter')
+        time.sleep(1)
+        
+        # Step 4: Attach file
+        # Click attachment button
+        pyautogui.hotkey('ctrl', 'shift', 'a')
+        time.sleep(1)
+        
+        # Type file path in dialog
+        pyperclip.copy(file_path)
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(0.5)
+        pyautogui.press('enter')
+        time.sleep(1)
+        
+        # Step 5: Send
+        pyautogui.press('enter')
+        time.sleep(1)
+        
+        return (
+            f"File {filename} sent to "
+            f"{contact_name} on WhatsApp! ✅"
+        )
+        
+    except Exception as e:
+        return f"WhatsApp file send error: {e}"
 
 @register_tool("play_spotify_music")
 def play_spotify_music(song_name: str) -> str:
@@ -533,108 +618,4 @@ def request_confirmation(action_description: str, original_command: str) -> str:
         logger.error(f"Failed to set pending action: {e}")
         return f"CONFIRMATION_FAILED: {e}. Use caution before proceeding."
 
-@register_tool("search_and_confirm_whatsapp_share")
-def search_and_confirm_whatsapp_share(file_name: str, contact_name: str, original_command: str) -> str:
-    """
-    Smart WhatsApp file share with human-in-the-loop contact confirmation.
-    
-    Flow:
-    1. Opens WhatsApp Desktop
-    2. Searches for the contact by name
-    3. Takes a screenshot of the results
-    4. Sends screenshot to user on Telegram asking for confirmation
-    5. Returns AWAITING_CONFIRMATION — STOP here and wait for user reply
 
-    Use this instead of manually opening WhatsApp and clicking contacts.
-    ALWAYS use this tool when the user wants to share/send something via WhatsApp.
-
-    Args:
-        file_name: Name of the file to share (e.g. "jai.pdf")
-        contact_name: Name of the contact to search for (e.g. "Rahul")
-        original_command: The original user command verbatim
-    """
-    import time as _time
-    import os as _os
-    import pyautogui as _pag
-    from datetime import datetime as _dt
-    from PIL import ImageGrab as _IG
-
-    chat_id = getattr(_tool_context, "chat_id", None)
-    if chat_id is None:
-        return "CONFIRMATION_SKIPPED: No chat context. Proceed manually."
-
-    try:
-        # Step 1: Open WhatsApp
-        import subprocess
-        subprocess.Popen(["explorer.exe", "whatsapp:"])  # noqa: S603
-        _time.sleep(3)
-
-        # Step 2: Open search bar (Ctrl+F in WhatsApp Desktop)
-        _pag.hotkey("ctrl", "f")
-        _time.sleep(1)
-
-        # Step 3: Type the contact name
-        _pag.typewrite(contact_name, interval=0.05)
-        _time.sleep(2)
-
-        # Step 4: Screenshot the search results
-        screenshot_dir = _os.path.join(_os.path.expanduser("~"), "AppData", "Local", "OpenDesk", "screenshots")
-        _os.makedirs(screenshot_dir, exist_ok=True)
-        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-        screenshot_path = _os.path.join(screenshot_dir, f"wa_search_{ts}.png")
-
-        img = _IG.grab()
-        img.save(screenshot_path)
-
-        # Step 5: Use OCR to extract contact names from the results area
-        found_contacts = []
-        try:
-            import pytesseract
-            from PIL import Image
-            # Crop left third of screen (WhatsApp contact list panel)
-            width, height = img.size
-            cropped = img.crop((0, int(height * 0.1), int(width * 0.35), int(height * 0.9)))
-            raw_text = pytesseract.image_to_string(cropped)
-            # Extract lines that look like names (non-empty, no special chars)
-            for line in raw_text.split("\n"):
-                line = line.strip()
-                if len(line) > 2 and line.replace(" ", "").replace("-", "").isalpha():
-                    if contact_name.lower() in line.lower() or line.lower() in contact_name.lower():
-                        found_contacts.append(line)
-            found_contacts = list(dict.fromkeys(found_contacts))[:5]  # dedupe, max 5
-        except Exception as ocr_e:
-            logger.debug(f"OCR contact extraction failed: {ocr_e}")
-
-        # Step 6: Register pending action with screenshot for Telegram
-        from opendesk.bot import set_pending_action
-        set_pending_action(
-            chat_id=chat_id,
-            action_description=f"Send {file_name} to {contact_name} on WhatsApp",
-            original_command=original_command,
-            action_type="whatsapp_share",
-            screenshot_path=screenshot_path,
-            file_name=file_name,
-            contact_name=contact_name,
-            found_contacts=found_contacts,
-        )
-
-        logger.info(f"WhatsApp search done. Found {len(found_contacts)} contacts. Screenshot at {screenshot_path}")
-
-        if found_contacts:
-            contacts_str = ", ".join(found_contacts)
-            return (
-                f"AWAITING_CONFIRMATION: Searched WhatsApp for '{contact_name}'.\n"
-                f"Found contacts: {contacts_str}\n"
-                f"Screenshot sent to user for confirmation.\n"
-                f"STOP HERE — wait for user to reply with the contact name."
-            )
-        else:
-            return (
-                f"AWAITING_CONFIRMATION: Searched WhatsApp for '{contact_name}'.\n"
-                f"Could not auto-read contact names — screenshot sent to user.\n"
-                f"STOP HERE — wait for user to confirm the correct contact."
-            )
-
-    except Exception as e:
-        logger.error(f"search_and_confirm_whatsapp_share failed: {e}")
-        return f"ERROR: Could not open WhatsApp or search for '{contact_name}': {e}"

@@ -35,7 +35,11 @@ class PressKeyInput(BaseModel):
 
 class SendWhatsappMessageInput(BaseModel):
     contact_name: str = Field(description="The exact name of the person or group you want to message, as saved in WhatsApp.")
-    message: str = Field(description="The text message you want to send.")
+    message: str = Field(default="", description="The text message you want to send. Leave empty if you only want to open the chat.")
+
+class SendWhatsappFileInput(BaseModel):
+    contact_name: str = Field(description="The exact name of the person or group you want to share a file with.")
+    filename: str = Field(description="The name of the file to share (e.g. 'jai.pdf').")
 
 class PlaySpotifyMusicInput(BaseModel):
     song_name: str = Field(description="The exact name of the song, artist, or album you want to play.")
@@ -91,6 +95,7 @@ TOOL_SCHEMAS = {
     "close_app": CloseAppInput,
     "press_key": PressKeyInput,
     "send_whatsapp_message": SendWhatsappMessageInput,
+    "send_whatsapp_file": SendWhatsappFileInput,
     "play_spotify_music": PlaySpotifyMusicInput,
     "control_media": ControlMediaInput,
     "set_volume": SetVolumeInput,
