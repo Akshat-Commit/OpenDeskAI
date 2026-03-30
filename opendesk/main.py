@@ -2,27 +2,35 @@ import sys
 import os
 import time
 
+# Force UTF-8 encoding on Windows so Rich/loguru Unicode doesn't crash under PM2
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Ensure the root directory is in sys.path so 'opendesk' is recognized as a package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from rich.live import Live
+from rich.text import Text
+from loguru import logger
 
 from opendesk.config import USER_MODE
 from opendesk.utils.banner import (
     show_banner, 
     show_mode_banner, 
-    show_health_footer, 
     show_completion_banner,
     console
 )
 
 from opendesk.utils.file_indexer import file_indexer
 from opendesk.utils.app_indexer import app_indexer
-from loguru import logger
+from opendesk.utils.startup_ui import StartupUI, IS_HEADLESS
     
 # Configure Loguru
 os.makedirs("logs", exist_ok=True)
 logger.remove()  # Remove default handler
 
-from opendesk.config import USER_MODE
 
 # Smart Logging: Show deep python tracebacks to devs on crash, hide them from standard users to keep UI clean
 is_dev = (USER_MODE == "developer")
@@ -88,23 +96,64 @@ def setup_cloudflare():
         print("\n[!] ERROR: Could not start Cloudflare tunnel. Check your internet connection.")
         sys.exit(1)
 
+async def send_startup_notification(bot):
+    try:
+        import os
+        from datetime import datetime
+        
+        chat_id_str = os.getenv("ALLOWED_TELEGRAM_ID")
+        if not chat_id_str:
+            return
+        chat_id = int(chat_id_str)
+        time_now = datetime.now().strftime("%I:%M %p")
+        
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "🖥️ *OpenDesk is Online!*\n\n"
+                "Your laptop is ready.\n\n"
+                "📱 *Connect from anywhere:*\n"
+                "Just send /start to this bot\n\n"
+                f"⏰ Started at: {time_now}\n"
+                "🔒 Only you can access this."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"Could not send startup notification: {e}")
+
 def run_opendesk():
     """Main entry point to start the full OpenDesk agent services."""
     import subprocess
     import asyncio
-    from opendesk.health_check import AnimatedSpinner, run_health_checks
+    from opendesk.health_check import run_health_checks
     
-    # Show the professional ASCII banner first
-    show_banner()
-    
-    # Show the red mode activation message
-    if USER_MODE:
-        show_mode_banner(USER_MODE)
+    ui = None
+    live = None
+
+    if not IS_HEADLESS:
+        ui = StartupUI()
+        live = Live(ui.get_renderable(), console=console, auto_refresh=False)
+        live.start()
+        ui.live = live
+        from opendesk.utils.banner import get_banner_renderable, get_mode_renderable
+        ui.add_renderable(get_banner_renderable())
+        if USER_MODE:
+            ui.add_renderable(get_mode_renderable(USER_MODE))
+    else:
+        # Fallback for logs/non-interactive terminals
+        show_banner()
+        if USER_MODE:
+            show_mode_banner(USER_MODE)
 
     
-    # ===== PRE-FLIGHT LINT CHECK =====
+    # ===== SECTION HEADERS =====
+    if ui:
+        ui.add_renderable(Text())
+        ui.add_renderable(Text.from_markup("      [bold black on white] OPENDESK CORE SERVICES [/bold black on white]"))
+        ui.add_renderable(Text())
+    
     phases = [
-        ("Linting core agent...", ["opendesk/ollama_agent/"]),
         ("Checking tool definitions...", ["opendesk/tools/"]),
         ("Verifying bot interface...", ["opendesk/bot.py", "opendesk/main.py"]),
         ("Analyzing database logic...", ["opendesk/db/"]),
@@ -112,8 +161,8 @@ def run_opendesk():
     
     all_passed = True
     for message, paths in phases:
-        spinner = AnimatedSpinner(message)
-        spinner.start()
+        if ui:
+            ui.add_renderable(Text.from_markup(f"      [bold white]○[/bold white]  {message}"))
         
         lint_result = subprocess.run(  # noqa: S603
             ["ruff", "check"] + paths + ["--select", "F821"],
@@ -122,61 +171,80 @@ def run_opendesk():
         )
         
         if lint_result.returncode != 0:
-            spinner.stop(f"Errors found in {message.split(' ')[1]}", status="error")
+            if ui:
+                ui.update_renderable(Text.from_markup(f"      [bold red]●[/bold red]  Error in {message.split(' ')[1]}"))
+            else:
+                print(f"Errors found in {message.split(' ')[1]}")
             print(lint_result.stdout)
             all_passed = False
             break
         else:
-            time.sleep(0.5)
-            spinner.stop(f"{message.split(' ')[1].capitalize()} passed", status="success")
+            time.sleep(0.3)
+            label = f"{message.split(' ')[1].capitalize()} passed"
+            if ui:
+                ui.update_renderable(Text.from_markup(f"      [bold green]●[/bold green]  {label}"))
+            else:
+                print(f"      ●  {label}")
             
     if not all_passed:
+        if live:
+            live.stop()
         print("\nFix these errors before starting the bot.")
         sys.exit(1)
 
-    # ===== SETUP WIZARD (first-run config) =====
-    from opendesk.setup_wizard import detect_user_mode, run_setup_wizard
-    
-    if not USER_MODE:
-        mode = detect_user_mode()
-        if mode:
-            run_setup_wizard()
-            from importlib import reload
-            import opendesk.config
-            reload(opendesk.config)
+
             
     # ===== BACKGROUND INDEXERS =====
-    spinner = AnimatedSpinner("Waking up background indexers...")
-    spinner.start()
+    if ui:
+        ui.add_renderable(Text.from_markup("      [bold white]○[/bold white]  Waking up background indexers..."))
     file_indexer.start_background_indexing()
     app_indexer.start_background_indexing()
-    time.sleep(0.5)
-    spinner.stop("Indexers running in background", status="success")
+    time.sleep(0.4)
+    if ui:
+        ui.update_renderable(Text.from_markup("      [bold green]●[/bold green]  Indexers running in background"))
+    else:
+        print("      ●  Indexers running in background")
     
+    # ===== SECTION HEADERS =====
+    if ui:
+        ui.add_renderable(Text())
+        ui.add_renderable(Text.from_markup("      [bold black on white] SYSTEM & STABILITY CHECK [/bold black on white]"))
+        ui.add_renderable(Text())
+        
     # ===== HEALTH CHECKS =====
     logger.debug("Running pre-flight health checks...")
-    if not asyncio.run(run_health_checks()):
+    if not asyncio.run(run_health_checks(ui=ui)):
+        if live:
+            live.stop()
         logger.error("Health checks failed. Please check the logs.")
         console.print("  [red]Health checks failed. Check logs for details.[/red]")
         sys.exit(1)
-        
-    show_health_footer()
     
     # ===== CLOUDFLARE TUNNEL =====
-    spinner = AnimatedSpinner("Opening secure Cloudflare tunnel...")
-    spinner.start()
+    if ui:
+        ui.add_renderable(Text.from_markup("      [bold white]○[/bold white]  Opening secure tunnel..."))
     cf_url, cf_tunnel = setup_cloudflare()
-    spinner.stop("Tunnel connected successfully", status="success")
+    if ui:
+        ui.update_renderable(Text.from_markup(f"      [bold green]●[/bold green]  Tunnel connected successfully"))
     
     # ===== BOT STARTUP (Background) =====
     monitor_instance.start()
     
     # ===== FINAL READINESS =====
-    show_completion_banner()
-    
-    # ===== QR GENERATION =====
-    time.sleep(0.5)  # brief pause for UX flow
-    token = generate_session_qr(cf_url)
+    if ui:
+        ui.add_renderable(Text.from_markup("\n      [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"))
+        ui.add_renderable(Text.from_markup("      [dim grey70]Generating secure session link...[/dim grey70]\n"))
+        
+        # ===== QR GENERATION (Inside Context) =====
+        time.sleep(0.5) 
+        token = generate_session_qr(cf_url, ui=ui)
+        
+        # Now stop the live context
+        if live:
+            live.stop()
+    else:
+        show_completion_banner()
+        token = generate_session_qr(cf_url)
     
     try:
         from opendesk.config import USER_MODE as CURRENT_MODE

@@ -7,11 +7,15 @@ from opendesk.config import GEMINI_API_KEY, GITHUB_API_KEY
 
 class JudgeAgent:
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash", 
-            google_api_key=GEMINI_API_KEY, 
-            temperature=0.0
-        )
+        self.llm = None
+        if GEMINI_API_KEY:
+            self.llm = ChatGoogleGenerativeAI(
+                model="gemini-2.0-flash", 
+                google_api_key=GEMINI_API_KEY, 
+                temperature=0.0
+            )
+        else:
+            logger.warning("GEMINI_API_KEY missing. Judge Agent primary LLM disabled.")
         
         self.fallback_llm = None
         if GITHUB_API_KEY:
@@ -47,6 +51,8 @@ class JudgeAgent:
         Keep it concise (2-3 sentences max).
         """
         try:
+            if not self.llm:
+                raise ValueError("Primary LLM (Gemini) not configured")
             response = await self.llm.ainvoke(prompt)
             return response.content.strip()
         except Exception as e:
@@ -136,6 +142,8 @@ class JudgeAgent:
             try:
                 from langchain_core.messages import HumanMessage
                 msg = HumanMessage(content=content_list)
+                if not self.llm:
+                    raise ValueError("Primary LLM (Gemini) not configured")
                 response = await self.llm.ainvoke([msg])
                 return extract_json(response.content)
             except Exception as e:
