@@ -21,7 +21,7 @@ class ContextMonitor:
         self.is_running = True
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
-        logger.info("ContextMonitor started in the background.")
+        logger.debug("ContextMonitor started in the background.")
 
     def stop(self):
         """Stops the background monitoring thread."""

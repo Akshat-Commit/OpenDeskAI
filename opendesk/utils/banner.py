@@ -1,5 +1,11 @@
-from rich.console import Console
+from rich.console import Console, Group
+from rich.text import Text
+from rich.align import Align
 import shutil
+import sys
+
+# Detect headless mode (running via PM2 / no interactive terminal)
+IS_HEADLESS = not sys.stdout.isatty()
 
 # Force console to use exact terminal width to prevent collapsing
 console = Console(width=shutil.get_terminal_size().columns)
@@ -13,54 +19,60 @@ OPENDESK_ART = """
       ░╚════╝░╚═╝░░░░░╚══════╝╚═╝░░╚══╝╚═════╝░╚══════╝╚═════╝░╚═╝░░╚═╝
 """
 
+def get_banner_renderable():
+    """Returns the original professional UPPERCASE banner."""
+    # Line-by-line centering exactly like setup_wizard.py for bit-perfect parity
+    lines = [Text()] # One top spacing line
+    for line in OPENDESK_ART.strip("\n").split("\n"):
+        lines.append(Align.center(Text(line, style="bold grey82", no_wrap=True)))
+    
+    lines.extend([
+        Text(),
+        Align.center(Text("V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/AKSHAT-COMMIT/OPENDESK", style="dim grey70")),
+        Text()
+    ])
+    return Group(*lines)
+
 def show_banner():
     """Show the professional UPPERCASE banner with hardcoded ASCII art."""
-    console.print()
-    
-    # Hardcoded ASCII Art
-    console.print(OPENDESK_ART, style="bold white")
-    
-    # Version line in uppercase - Monochromatic
-    console.print(
-        "        V1.0.0  |  FREE & OPEN SOURCE  |  GITHUB.COM/AKSHAT-COMMIT/OPENDESK",
-        style="dim white"
+    if IS_HEADLESS:
+        return
+    console.print(get_banner_renderable())
+
+def get_mode_renderable(mode: str):
+    """Returns the original prominently highlighted mode message."""
+    # Green-ish background for all modes per user request
+    bg_color = "green"
+    label = f"[bold black on {bg_color}]  {mode.upper()} MODE ACTIVATED  [/bold black on {bg_color}]"
+    return Group(
+        Align.center(label),
+        Text()
     )
-    console.print()
 
 def show_mode_banner(mode: str):
     """Shows a prominent full-width monochromatic mode message."""
-    if not mode:
+    if IS_HEADLESS or not mode:
         return
-    from rich.panel import Panel
-    from rich.align import Align
-    
-    label = f"[bold white]{mode.upper()} MODE ACTIVATED[/bold white]"
-    console.print(
-        Panel(
-            Align.center(label),
-            border_style="bold grey70",
-            expand=True
-        )
-    )
-    console.print()
+    console.print(get_mode_renderable(mode))
 
 def show_health_header():
-    """Shows the generic health status header in monochromatic theme (full width)."""
+    if IS_HEADLESS:
+        return
     columns = shutil.get_terminal_size().columns - 1
-    # Box header: ┌ + ─ * (cols - 2) + ┐
-    console.print(f"┌{'─' * (columns - 2)}┐", style="bold white")
+    console.print(f"┌{'─' * (columns - 2)}┐", style="bold grey82")
 
 def show_health_footer():
-    """Closes the generic health status box in monochromatic theme (full width)."""
+    if IS_HEADLESS:
+        return
     columns = shutil.get_terminal_size().columns - 1
-    # Box footer: └ + ─ * (cols - 2) + ┘
-    console.print(f"└{'─' * (columns - 2)}┘", style="bold white")
+    console.print(f"└{'─' * (columns - 2)}┘", style="bold grey82")
 
 def show_completion_banner():
-    """Shows a simple, clean, non-blocking completion message."""
+    if IS_HEADLESS:
+        return
     console.print(
-        "\n      [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"
+        "\n      [bold green]●[/bold green] [bold grey82]OPENDESK CORE SERVICES READY[/bold grey82]"
     )
     console.print(
-        "      [dim white]Generating secure session link...[/dim white]\n"
+        "      [dim grey70]Generating secure session link...[/dim grey70]\n"
     )

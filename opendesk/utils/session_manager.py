@@ -38,6 +38,22 @@ def create_session(ngrok_url: str) -> str:
     logger.debug(f"Created new connection session token (expires in {SESSION_EXPIRY_SECONDS}s)")
     return token
 
+def create_owner_session(telegram_user_id: int) -> bool:
+    """Forcefully creates and claims a session for the authorized owner without a QR code."""
+    now = time.time()
+    token = f"owner-{secrets.token_urlsafe(8)}"
+    
+    SESSIONS[token] = {
+        "laptop_id": _generate_laptop_id(),
+        "ngrok_url": "direct",
+        "telegram_user_id": telegram_user_id,
+        "claimed": True,
+        "created_at": now,
+        "expires_at": now + 999999999  # effectively never expires
+    }
+    logger.info(f"Owner session auto-linked for user {telegram_user_id}")
+    return True
+
 def is_session_valid(token: str) -> bool:
     """Checks if a token exists and hasn't expired (if unclaimed)."""
     session = SESSIONS.get(token)
@@ -66,7 +82,7 @@ def claim_session(token: str, telegram_user_id: int) -> bool:
     session["claimed"] = True
     # Once claimed, it stays alive until explicitly disconnected
     
-    logger.info(f"Session {token[:4]}... claimed by Telegram User ID {telegram_user_id}")
+    logger.debug(f"Session {token[:4]}... claimed by Telegram User ID {telegram_user_id}")
     return True
 
 def get_session_by_user(telegram_user_id: int) -> Optional[Dict[str, Any]]:

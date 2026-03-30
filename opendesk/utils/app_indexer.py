@@ -85,7 +85,7 @@ class AppIndexer:
             conn.close()
 
     def _scan_registry(self):
-        logger.info("Scanning registry for apps...")
+        logger.debug("Scanning registry for apps...")
         count = 0
         try:
             key = winreg.OpenKey(

@@ -1,21 +1,48 @@
 import qrcode # type: ignore
 from loguru import logger
 import sys
+import shutil
+from rich.console import Console
+from rich.text import Text
 
 from opendesk.config import BOT_USERNAME
 from opendesk.utils.session_manager import create_session
 
+_console = Console()
 
-
-def generate_session_qr(ngrok_url: str) -> str:
+def generate_session_qr(ngrok_url: str, ui=None) -> str:
     """
     Generates a new session and prints a QR code to the terminal.
     Returns the generated session token.
     """
     if not BOT_USERNAME:
-        logger.error("BOT_USERNAME is required in .env for QR code generation.")
-        print("\n[!] ERROR: Please set BOT_USERNAME in your .env file to use the session linking feature.")
-        sys.exit(1)
+        logger.warning("BOT_USERNAME not set. Showing direct-connect instructions instead.")
+        if sys.stdout.isatty():
+            cols = shutil.get_terminal_size().columns
+            if ui:
+                ui.add_renderable(Text())
+                ui.add_renderable(Text("      NO QR CODE — DIRECT CONNECTION MODE", style="bold white"))
+                ui.add_renderable(Text("      BOT_USERNAME is not set in .env", style="dim grey70"))
+                ui.add_renderable(Text())
+                ui.add_renderable(Text("      How to connect:", style="bold white"))
+                ui.add_renderable(Text("      1. Open Telegram and find your bot"))
+                ui.add_renderable(Text("      2. Send:  /start"))
+                ui.add_renderable(Text("      3. Enter your PIN when prompted (if set)"))
+                ui.add_renderable(Text())
+            else:
+                _console.print()
+                _console.print("─" * cols, style="dim grey70")
+                _console.print("      [bold white]NO QR CODE — DIRECT CONNECTION MODE[/bold white]")
+                _console.print("      [dim grey70]BOT_USERNAME is not set in .env[/dim grey70]")
+                _console.print()
+                _console.print("      [bold white]How to connect:[/bold white]")
+                _console.print("      [green]1.[/green] Open Telegram and find your bot")
+                _console.print("      [green]2.[/green] Send:  [bold white]/start[/bold white]")
+                _console.print("      [green]3.[/green] Enter your PIN when prompted (if set)")
+                _console.print()
+                _console.print("─" * cols, style="dim grey70")
+                _console.print()
+        return ""
         
     token = create_session(ngrok_url)
     
@@ -32,20 +59,29 @@ def generate_session_qr(ngrok_url: str) -> str:
     qr.make(fit=True)
     
     import io
-    import shutil
     
     # Capture the QR code and print it with a left margin
     f = io.StringIO()
     qr.print_ascii(out=f, invert=True)
     qr_str = f.getvalue()
-    for line in qr_str.split("\n"):
-        if line.strip() or line: # Prevent printing useless empty newlines
-            print("      " + line)
     
-    cols = shutil.get_terminal_size().columns
-    print("\n" + "─" * cols)
-    print("      SCAN WITH PHONE CAMERA TO CONNECT")
-    print("      Link expires in 60 seconds.")
-    print("─" * cols + "\n")
+    if ui:
+        for line in qr_str.split("\n"):
+            if line.strip() or line:
+                ui.add_renderable(Text("      " + line))
+        ui.add_renderable(Text())
+        ui.add_renderable(Text("      SCAN WITH PHONE CAMERA TO CONNECT", style="bold white"))
+        ui.add_renderable(Text("      Link expires in 60 seconds.", style="dim grey70"))
+        ui.add_renderable(Text())
+    else:
+        for line in qr_str.split("\n"):
+            if line.strip() or line:
+                print("      " + line)
+        
+        cols = shutil.get_terminal_size().columns
+        print("\n" + "─" * cols)
+        print("      SCAN WITH PHONE CAMERA TO CONNECT")
+        print("      Link expires in 60 seconds.")
+        print("─" * cols + "\n")
     
     return token
