@@ -8,6 +8,10 @@ import sys
 import itertools
 import asyncio
 from typing import Optional
+from rich.text import Text
+
+# Detect headless mode (running via PM2 / no interactive terminal)
+IS_HEADLESS = not sys.stdout.isatty()
 
 class AnimatedSpinner:
     def __init__(self, message="Loading..."):
@@ -25,6 +29,9 @@ class AnimatedSpinner:
             time.sleep(0.1)
 
     def start(self):
+        if IS_HEADLESS:
+            logger.info(f"[START] {self.message}")
+            return
         self.running = True
         thread = threading.Thread(target=self._spin)
         thread.daemon = True
@@ -32,6 +39,9 @@ class AnimatedSpinner:
         thread.start()
 
     def stop(self, final_text, status="success"):
+        if IS_HEADLESS:
+            logger.info(f"[DONE]  {final_text}")
+            return
         self.running = False
         if self.spinner_thread:
             self.spinner_thread.join()
@@ -39,9 +49,9 @@ class AnimatedSpinner:
         if status == "success":
             icon = "\033[92m●\033[0m"
         elif status == "warning":
-            icon = "\033[93m⚠️ \033[0m" 
+            icon = "\033[93m●\033[0m"
         else:
-            icon = "\033[91m❌\033[0m"
+            icon = "\033[91m●\033[0m"
             
         sys.stdout.write(f"\r\033[K      {icon}  {final_text}\n")
         sys.stdout.flush()
@@ -104,7 +114,7 @@ def check_api_raw():
     except Exception:
         return False
 
-async def run_health_checks():
+async def run_health_checks(ui=None):
     """Runs all health checks sequentially with 1.0s timeout to prevent UI freeze."""
     from opendesk.config import USER_MODE
     mode = USER_MODE or "developer"
@@ -128,22 +138,37 @@ async def run_health_checks():
     
     loop = asyncio.get_event_loop()
     
-    # Bold heading before checks
-    print("\n      \033[1mSYSTEM & STABILITY CHECK\033[0m\n")
+    # Only show Rich UI when running interactively
+    if ui:
+        pass
+    elif not IS_HEADLESS:
+        from rich.console import Console as _Con
+        _con = _Con()
+        _con.print()
+    else:
+        logger.info("Running health checks in headless/background mode...")
     
     for label, check_func in checks:
-        # Step 1: Real checks run continuously in background thread, zero blocking
-        loop.run_in_executor(None, check_func)
-        
-        # Step 2: Show spinner instantly with the label
-        spinner = AnimatedSpinner(f"{label}...")
-        spinner.start()
-        
-        # Step 3: Wait exactly 0.3 seconds for smooth loading feel
-        await asyncio.sleep(0.3)
-        
-        # Step 4: Replace spinner with green tick on the same line
-        spinner.stop(label, status="success")
-        
+        if ui:
+            # Step 1: Real checks run continuously in background thread, zero blocking
+            loop.run_in_executor(None, check_func)
+            
+            # Step 2: Show original loading dot (○)
+            ui.add_renderable(Text.from_markup(f"      [bold white]○[/bold white]  {label}..."))
+            
+            # Step 3: Wait for smooth loading feel
+            await asyncio.sleep(0.4)
+            
+            # Step 4: REPLACE the loading line with success dot (●)
+            # This is bit-for-bit parity with the original \r behavior
+            ui.update_renderable(Text.from_markup(f"      [bold green]●[/bold green]  {label}"))
+        else:
+            # Fallback to old spinner style
+            loop.run_in_executor(None, check_func)
+            spinner = AnimatedSpinner(f"{label}...")
+            spinner.start()
+            await asyncio.sleep(0.3)
+            spinner.stop(label, status="success")
+            
     return True
 

@@ -7,12 +7,16 @@ from rich.table import Table
 from rich.panel import Panel
 from typing import Optional
 
+# Detect headless mode (running via PM2 / no interactive terminal)
+IS_HEADLESS = not sys.stdout.isatty()
+
 app = typer.Typer(
     name="opendesk",
     help="OpenDesk AI - Control your laptop from Telegram",
     add_completion=False,
     rich_markup_mode="rich",
-    add_help_option=False
+    add_help_option=False,
+    pretty_exceptions_show_locals=False,
 )
 
 console = Console()
@@ -44,6 +48,16 @@ def check_venv():
     ) else sys.executable
 
 @app.command()
+def setup():
+    """
+    🛠️ Complete first-time setup wizard.
+    Installs and configures everything
+    automatically.
+    """
+    from opendesk.setup_wizard import run_setup
+    run_setup()
+
+@app.command()
 def start(
     mode: Optional[str] = typer.Option(
         None,
@@ -60,22 +74,24 @@ def start(
     🚀 Start OpenDesk agent and show QR code.
     """
     
-    if mode:
-        os.environ["USER_MODE"] = mode
+    if not os.path.exists(".env"):
         console.print(
-            f"  Mode set to: [bold cyan]{mode}[/]"
+            "[yellow]No configuration found!\n"
+            "Running setup wizard first...[/]\n"
         )
+        from opendesk.setup_wizard import run_setup
+        run_setup()
+        return
+    
+    current_mode = mode or os.getenv("USER_MODE", "local").lower()
+    os.environ["USER_MODE"] = current_mode # Ensure it's set for the rest of the app
     
     if debug:
         os.environ["LOG_LEVEL"] = "DEBUG"
-        console.print(
-            "  [yellow]Debug mode enabled[/]"
-        )
-    
-    console.print(
-        "\n  [bold bright_cyan]"
-        "Starting OpenDesk...[/]\n"
-    )
+        if not IS_HEADLESS:
+            console.print(
+                "  [dim grey70]Debug mode active[/]"
+            )
     
     try:
         from opendesk.main import run_opendesk
