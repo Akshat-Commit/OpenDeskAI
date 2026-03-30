@@ -62,19 +62,22 @@ You → Telegram → OpenDesk → Your Laptop
 | Category | What You Can Do |
 |----------|----------------|
 | 🖥️ System Control | Volume, brightness, screenshots, lock, shutdown |
-| 📁 File Management | Create, read, move, delete, search files |
-| 🌐 Browser Control | Open URLs, search Google, web automation |
+| 📁 File Management | Smart file indexing, create, read, move, delete, search files |
+| 🌐 Browser Control | Playwright browser automation, open URLs, web search |
 | ⌨️ Terminal Access | Run PowerShell commands and scripts |
+| 📱 WhatsApp | Smart WhatsApp file sharing with OCR contact selection |
+| 🎵 Media | Spotify control (play, pause, next) |
+| 📸 Smart Search | Screenshot with OCR search |
 | 📄 Document Tools | Read PDFs, Word docs, Excel, PowerPoint |
 | 🚀 App Launcher | Open any app by name instantly |
-| 🐍 Code Execution | Run Python snippets from chat |
-| 👁️ Vision AI | See and describe your screen (optional) |
-| 🔄 Smart Fallback | Auto switches between AI models |
-| 🌍 Remote Access | Control from anywhere via QR code |
-| 🛡️ Private & Secure | Only YOU can access your machine |
-| ⚡ Fast-Lane Architecture | Instant Semantic Routing with 0-delay RAM Caching |
+| 👁️ Vision AI | See and describe your screen via Moondream |
+| 🔄 Smart AI Chain | Multi-model fallback chain (Local -> Groq -> Gemini -> GitHub) |
+| 🔒 Security | Human-in-the-loop PIN security system |
+| 💾 Memory | SQLite persistent memory & context tracking |
+| 🌍 Remote Access | Control from anywhere via secure tunnel |
+| ⚡ Fast-Lane | Instant Semantic Routing for simple commands |
 | 👻 Background Daemon | Run 24/7 silently via PM2 Process Manager |
-| ⌨️ Typer CLI | Fully featured terminal interface (`opendesk start`, `logs`, `config`) |
+| ⌨️ Setup & CLI | One-command setup wizard & Typer CLI |
 
 ---
 
@@ -224,15 +227,16 @@ If you don't want to keep a terminal window open, you can run OpenDesk silently 
 | Layer | Technology |
 |-------|-----------|
 | AI Engine | LangChain + Ollama |
-| Cloud AI | Groq + Google Gemini (optional) |
-| Vision | Moondream (optional) |
+| Cloud AI | Groq + Google Gemini + GitHub |
+| Vision | Moondream |
 | Bot Interface | python-telegram-bot |
+| Browser | Playwright |
+| Search | DuckDuckGo |
 | Tunneling | Cloudflare (pycloudflared) |
 | Database | SQLite3 |
 | Logging | Loguru |
-| Terminal UI | Rich + Pyfiglet |
-| Automation | PyAutoGUI + Selenium |
-| Documents | PyPDF2 + python-docx + pandas |
+| Terminal UI | Typer + Rich |
+| Process | PM2 |
 
 ---
 
@@ -242,23 +246,45 @@ OpenDeskAI/
 ├── opendesk/
 │   ├── main.py           # Entry point
 │   ├── bot.py            # Telegram handler
-│   ├── config.py         # Configuration
-│   ├── health_check.py   # System checks
-│   ├── setup_wizard.py   # First run setup
+│   ├── cli.py            # Typer CLI interface
 │   ├── agent.py          # AI agent core
-│   ├── ollama_agent/     # LLM integration
-│   ├── tools/            # All tools
-│   │   ├── system.py
+│   ├── config.py         # Configuration loader
+│   ├── setup_wizard.py   # First run interactive setup
+│   ├── semantic_router.py# Fast-lane command router
+│   ├── health_check.py   # Pre-flight system checks
+│   ├── ollama_agent/
+│   │   ├── langchain_agent.py
+│   │   ├── judge_agent.py
+│   │   └── memory_agent.py
+│   ├── tools/
 │   │   ├── filesystem.py
 │   │   ├── browser.py
+│   │   ├── system.py
 │   │   ├── terminal.py
-│   │   └── app_launcher.py
-│   ├── db/               # Database layer
-│   └── utils/            # Banner, QR code
-├── tests/                # Test suite
-├── .env.example          # Config template
-├── requirements.txt      # Dependencies
-├── run.ps1               # Windows launcher
+│   │   ├── app_launcher.py
+│   │   ├── clipboard.py
+│   │   ├── office.py
+│   │   └── schemas.py
+│   ├── core/
+│   │   ├── task_manager.py
+│   │   └── simple_memory.py
+│   ├── db/
+│   │   ├── connection.py
+│   │   └── crud.py
+│   └── utils/
+│       ├── banner.py
+│       ├── file_indexer.py
+│       ├── app_indexer.py
+│       ├── path_detector.py
+│       ├── ocr_analyzer.py
+│       ├── qr_generator.py
+│       └── context_monitor.py
+├── tests/
+├── data/
+├── logs/
+├── .env.example
+├── setup.py
+├── requirements.txt
 └── README.md
 ```
 
