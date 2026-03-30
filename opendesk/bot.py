@@ -4,10 +4,10 @@ from loguru import logger
 from telegram import Update # type: ignore
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes # type: ignore
 
-from opendesk.config import BOT_TOKEN, ALLOWED_TELEGRAM_ID # type: ignore
-
-
-
+from opendesk.config import BOT_TOKEN, ALLOWED_TELEGRAM_ID, GROQ_API_KEY_2 # type: ignore
+from opendesk.semantic_router import get_routing_info # type: ignore
+from opendesk.core.simple_memory import simple_memory # type: ignore
+from langchain_groq import ChatGroq
 import asyncio
 from typing import Dict
 from datetime import datetime
@@ -22,6 +22,87 @@ USER_PAUSED_STATE: Dict[int, bool] = {}
 #   type="confirm"         → simple YES/NO gate
 #   type="whatsapp_share"  → contact selection with optional screenshot
 PENDING_ACTIONS: Dict[int, dict] = {}
+
+# Track who is waiting for PIN
+pending_pin_verification = {}
+
+# Track failed attempts
+failed_pin_attempts = {}
+
+def _update_env(key: str, value: str):
+    env_path = ".env"
+    lines = []
+    found = False
+    
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            lines = f.readlines()
+    
+    new_lines = []
+    for line in lines:
+        if line.startswith(f"{key}="):
+            new_lines.append(f"{key}={value}\n")
+            found = True
+        else:
+            new_lines.append(line)
+    
+    if not found:
+        new_lines.append(f"{key}={value}\n")
+    
+    with open(env_path, "w") as f:
+        f.writelines(new_lines)
+
+async def handle_pin_input(update, context, text, chat_id, user_id):
+    pin = os.getenv("OPENDESK_PIN", "")
+    
+    if not pin:
+        return False
+    
+    # Check if user is in PIN verification
+    if chat_id not in pending_pin_verification:
+        return False
+    
+    # Track failed attempts
+    attempts = failed_pin_attempts.get(chat_id, 0)
+    
+    if attempts >= 3:
+        await update.message.reply_text(
+            "🚫 Too many wrong attempts!\n"
+            "Wait 5 minutes and try again."
+        )
+        return True
+    
+    if text.strip() == pin:
+        # PIN correct! Create a persistent owner session so all commands work.
+        del pending_pin_verification[chat_id]
+        failed_pin_attempts[chat_id] = 0
+        
+        from opendesk.utils.session_manager import get_session_by_user, create_owner_session
+        if not get_session_by_user(user_id):
+            create_owner_session(user_id)
+        
+        if not hasattr(task_manager, 'user_history'):
+            task_manager.user_history = {}
+        task_manager.user_history[chat_id] = []
+        
+        mode = os.getenv("USER_MODE", "local").upper()
+        await update.message.reply_text(
+            f"✅ PIN correct!\n"
+            f"🖥️ Connected in {mode} mode!\n"
+            f"👤 ID: {user_id}\n"
+            f"Send commands now. 🚀"
+        )
+        return True
+    else:
+        # PIN wrong
+        failed_pin_attempts[chat_id] = attempts + 1
+        remaining = 3 - (attempts + 1)
+        
+        await update.message.reply_text(
+            f"❌ Wrong PIN!\n"
+            f"{remaining} attempts remaining."
+        )
+        return True
 
 def set_pending_action(
     chat_id: int,
@@ -144,28 +225,57 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Unauthorized. Your Telegram ID is not on the whitelist.")
         return
     
-    # Extract token if provided: `/start XYZ123`
     args = context.args
+    
+    # If token provided validate it
     if args and len(args) > 0:
         token = args[0]
         if is_session_valid(token):
-            success = claim_session(token, user_id)
-            if success:
-                from opendesk.core.simple_memory import simple_memory
-                simple_memory.history[chat_id] = []  # Fresh start for new session
-                await update.message.reply_text("✅ Connected to your laptop! Send commands now.")
+            claim_session(token, user_id)
+            
+            if not hasattr(task_manager, 'user_history'):
+                task_manager.user_history = {}
+            task_manager.user_history[chat_id] = []
+            
+            # Check PIN
+            pin = os.getenv("OPENDESK_PIN", "")
+            if pin:
+                pending_pin_verification[chat_id] = "start"
+                await update.message.reply_text("🔐 Enter your PIN to connect:")
                 return
-            else:
-                await update.message.reply_text("❌ Failed to claim session. Please try again.")
-                return
-        else:
-            await update.message.reply_text("❌ QR code expired or invalid. Run `opendesk start` again on your laptop.")
+            
+            mode = os.getenv("USER_MODE", "local").upper()
+            await update.message.reply_text(
+                f"✅ Connected in {mode} mode!\n"
+                f"👤 ID: {user_id}\n"
+                f"Send commands now."
+            )
             return
+    
+    # No token - owner connects directly!
+    # Owner does not need QR code ever!
+    from opendesk.utils.session_manager import get_session_by_user, create_owner_session
+    
+    # Ensure owner has a registered session so all commands work
+    if not get_session_by_user(user_id):
+        create_owner_session(user_id)
 
-    # Normal starting text if no token provided or clicked randomly
+    pin = os.getenv("OPENDESK_PIN", "")
+    if pin:
+        pending_pin_verification[chat_id] = "start"
+        await update.message.reply_text("🔐 Enter your PIN to connect:")
+        return
+    
+    # Connect directly
+    if not hasattr(task_manager, 'user_history'):
+        task_manager.user_history = {}
+    task_manager.user_history[chat_id] = []
+    
+    mode = os.getenv("USER_MODE", "local").upper()
     await update.message.reply_text(
-        "🖥️ Welcome to OpenDesk!\n"
-        "Please scan the QR code from your terminal to connect to your PC."
+        f"✅ Connected in {mode} mode!\n"
+        f"👤 ID: {user_id}\n"
+        f"Send commands now."
     )
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,17 +286,25 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session_by_user(user_id)
     
     if not session:
-        await update.message.reply_text("🔴 Not connected. Please scan a QR code from your laptop.")
+        await update.message.reply_text(
+            "🔴 Not connected.\n"
+            "Send /start to connect (PIN required if set)."
+        )
         return
         
     import time
     active_since = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session["created_at"]))
     
+    active_since = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session["created_at"]))
+    mode = os.getenv("USER_MODE", "local").upper()
+    
     await update.message.reply_text(
         f"🟢 **Status:** Connected\n"
+        f"⚙️ **Mode:** {mode}\n"
         f"💻 **Laptop ID:** `{session['laptop_id']}`\n"
+        f"👤 **Admin ID:** `{user_id}`\n"
         f"⏱️ **Active Since:** {active_since}\n"
-        f"🔗 **Connection:** Active (Ngrok)"
+        f"🔗 **Connection:** Active"
     )
 
 async def disconnect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -255,6 +373,66 @@ async def getscreenshot_handler(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Error in getscreenshot: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
+
+async def reconnect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    
+    if not is_authorized(user_id):
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    
+    # Check if PIN is set
+    pin = os.getenv("OPENDESK_PIN", "")
+    if pin:
+        # Ask for PIN
+        pending_pin_verification[chat_id] = "reconnect"
+        await update.message.reply_text("🔐 Enter your PIN to connect:")
+        return
+    
+    # No PIN - connect directly
+    from opendesk.utils.session_manager import get_session_by_user, create_owner_session
+    if not get_session_by_user(user_id):
+        create_owner_session(user_id)
+
+    if not hasattr(task_manager, 'user_history'):
+        task_manager.user_history = {}
+    task_manager.user_history[chat_id] = []
+    
+    await update.message.reply_text(
+        "🔄 Reconnected successfully!\n"
+        "✅ Send commands now."
+    )
+
+async def changepin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /changepin NEWPIN\n"
+            "Example: /changepin 5678"
+        )
+        return
+    
+    new_pin = context.args[0]
+    
+    if not new_pin.isdigit():
+        await update.message.reply_text("❌ PIN must be numbers only!")
+        return
+    
+    if len(new_pin) < 4:
+        await update.message.reply_text("❌ PIN must be at least 4 digits!")
+        return
+    
+    # Save to .env
+    _update_env("OPENDESK_PIN", new_pin)
+    
+    await update.message.reply_text(
+        f"✅ PIN updated successfully!\n"
+        f"New PIN: {'*' * len(new_pin)}"
+    )
 
 async def apps_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows all indexed apps from the AppIndexer."""
@@ -325,98 +503,150 @@ async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reset paused state always on cancel to ensure responsiveness
     USER_PAUSED_STATE[chat_id] = False
 
+async def handle_resume(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Bug 1: Context Aware Resume. Checks history for music context."""
+    # Check last command in history
+    history = simple_memory.get_context(chat_id, limit=5)
+    
+    last_user_commands = [
+        msg["content"].lower()
+        for msg in history
+        if msg["role"] == "user"
+    ]
+    
+    MUSIC_KEYWORDS = [
+        "music", "song", "spotify",
+        "play", "pause", "track",
+        "audio", "volume"
+    ]
+    
+    # Was last command music related?
+    music_context = any(
+        any(kw in cmd for kw in MUSIC_KEYWORDS)
+        for cmd in last_user_commands
+    )
+    
+    if music_context:
+        logger.info(f"Music context detected for resume in chat {chat_id}")
+        # Resume music not just connection!
+        await task_manager.add_to_queue(
+            update, context,
+            "resume the music on spotify"
+        )
+        # Also ensure connection is resumed
+        USER_PAUSED_STATE[chat_id] = False
+    else:
+        # No music context = standard connection resume
+        USER_PAUSED_STATE[chat_id] = False
+        await update.message.reply_text("✅ Ready for commands!")
+
+async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Bug 2: Fast LLM fallback for unknown commands using Groq."""
+    chat_id = update.message.chat_id
+    history = simple_memory.get_context(chat_id, limit=3)
+    
+    context_text = "\n".join([
+        f"{m['role']}: {m['content']}"
+        for m in history
+    ])
+    
+    prompt = f"""Previous conversation:
+{context_text}
+
+User now says: {text}
+
+You are OpenDesk AI assistant.
+Reply helpfully based on context.
+If user said check again or verify, check if the last task worked.
+Be concise and friendly."""
+    
+    llm = ChatGroq(
+        model_name="llama-3.3-70b-versatile",
+        groq_api_key=GROQ_API_KEY_2,
+        temperature=0.7,
+        max_tokens=150
+    )
+    
+    logger.info(f"Routing unknown command to fast LLM: '{text}'")
+    try:
+        response = await llm.ainvoke(prompt)
+        reply = response.content
+        await update.message.reply_text(reply)
+    except Exception as e:
+        logger.error(f"Fast LLM chat failed: {e}")
+        await update.message.reply_text("Could you rephrase that? I want to help! 😊")
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point for incoming text: Routes to immediate execution or the command queue."""
     text = update.message.text
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
     
-    if not text:
+    if not text or not is_authorized(user_id):
         return
-        
-    if not is_authorized(user_id):
-        return
-
+    
     text_lower = text.lower().strip()
-        
-    # PRIORITY 1: Check STOP/RESUME (Instant)
+    
+    # PRIORITY 1: Check STOP/CANCEL (Highest Priority)
     if text_lower in [w.lower() for w in STOP_WORDS]:
         await cancel_handler(update, context)
-        # We set paused to False inside cancel_handler anyway, 
-        # but the user might want a moment of silence or just a stop.
-        # Following rule 5: set False immediately after cancel.
         USER_PAUSED_STATE[chat_id] = False
         return
 
+    # PRIORITY 2: Check PIN input next
+    pin_handled = await handle_pin_input(
+        update, context, text,
+        chat_id, user_id
+    )
+    if pin_handled:
+        return
+
+
+    # PRIORITY 3: Check INSTANT REPLIES (exact or near-exact full message only)
+    from thefuzz import fuzz
+    for key in INSTANT_REPLIES:
+        if text_lower == key or fuzz.ratio(text_lower, key) > 90:
+            await update.message.reply_text(INSTANT_REPLIES[key])
+            return
+
+    # PRIORITY 4: TIME / BATTERY / VOLUME (Hardcoded Quick Response)
+    TIME_WORDS = ["time", "what time", "current time", "time is it", "time it is", "kitna baja", "baje hain"]
+    BATTERY_WORDS = ["battery", "charge", "kitni battery"]
+    VOLUME_WORDS = ["volume", "sound level"]
+
+    if any(w in text_lower for w in TIME_WORDS):
+        now = datetime.now().strftime("%I:%M %p")
+        await update.message.reply_text(f"🕐 Current time: {now}")
+        return
+
+    if any(w in text_lower for w in BATTERY_WORDS):
+        battery = psutil.sensors_battery()
+        if battery:
+            plugged = "🔌 Charging" if battery.power_plugged else "🔋 On battery"
+            await update.message.reply_text(f"🔋 Battery: {battery.percent:.0f}%\n{plugged}")
+        else:
+            await update.message.reply_text("🔋 Battery information not available.")
+        return
+
+    if any(w in text_lower for w in VOLUME_WORDS):
+        await update.message.reply_text("🔊 Use: set volume to [0-100]")
+        return
+
+    # PRIORITY 5: CONTEXT AWARE RESUME
     if text_lower in [w.lower() for w in RESUME_WORDS]:
-        USER_PAUSED_STATE[chat_id] = False
-        await update.message.reply_text("✅ Resumed! Ready for commands.")
+        await handle_resume(update, context, chat_id)
         return
 
     if USER_PAUSED_STATE.get(chat_id, False):
         return
 
-    # PRIORITY 1.5: Human-in-the-loop confirmation handler
+    # PRIORITY 5.5: Human-in-the-loop confirmation handler (remains critical)
     if chat_id in PENDING_ACTIONS:
         pending = PENDING_ACTIONS[chat_id]
         is_yes = text_lower in ["yes", "y", "haan", "ha", "confirm", "ok", "okay"]
         is_no  = text_lower in ["no", "n", "nahi", "nope", "cancel", "stop", "abort"]
 
-        if pending.get("type") == "whatsapp_share":
-            found = pending.get("found_contacts", [])
-
-            if is_no:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text("❌ Cancelled. Nothing was sent.")
-                return
-
-            # Check if user typed a number to select from list
-            selected_contact = None
-            if text_lower.isdigit():
-                idx = int(text_lower) - 1
-                if 0 <= idx < len(found):
-                    selected_contact = found[idx]
-
-            # Or if user typed a name that matches one of the found contacts
-            if not selected_contact:
-                for c in found:
-                    if text_lower in c.lower() or c.lower() in text_lower:
-                        selected_contact = c
-                        break
-
-            # YES with single result → confirm first contact
-            if is_yes and len(found) <= 1:
-                selected_contact = found[0] if found else pending.get("contact_name", "")
-
-            if selected_contact:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text(f"✅ Sending to **{selected_contact}**...", parse_mode="Markdown")
-                confirmed_cmd = (
-                    f"[USER SELECTED CONTACT: {selected_contact}] "
-                    f"{pending['original_command']}"
-                )
-                await task_manager.add_to_queue(update, context, confirmed_cmd)
-                return
-
-            # Multiple contacts found — ask user to pick one
-            if found:
-                options = "\n".join(f"{i+1}. {c}" for i, c in enumerate(found))
-                await update.message.reply_text(
-                    f"📋 **Multiple matches found:**\n{options}\n\n"
-                    f"Reply with the **number** or **exact name** of the person to send to, "
-                    f"or **NO** to cancel.",
-                    parse_mode="Markdown"
-                )
-            else:
-                await update.message.reply_text(
-                    f"⚠️ Could not match that name. Reply **NO** to cancel, "
-                    f"or type the exact contact name.",
-                    parse_mode="Markdown"
-                )
-            return
-
-        else:
-            # Simple YES/NO confirm mode
+        if pending.get("type") == "confirm":
             if is_yes:
                 del PENDING_ACTIONS[chat_id]
                 await update.message.reply_text("✅ Confirmed! Proceeding...")
@@ -435,59 +665,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-    # PRIORITY 2: Check INSTANT REPLIES (exact or near-exact full message only)
-    from thefuzz import fuzz
-    for key in INSTANT_REPLIES:
-        # Only match if the WHOLE message IS the key — never on substrings
-        if text_lower == key or fuzz.ratio(text_lower, key) > 90:
-            await update.message.reply_text(INSTANT_REPLIES[key])
-            return
-
-    # PRIORITY 3: HARDCODED CHECK (0.1s Execution)
-    TIME_WORDS = [
-        "time", "what time", "current time",
-        "time is it", "time it is",
-        "kitna baja", "baje hain"
-    ]
-
-    BATTERY_WORDS = [
-        "battery", "charge", "kitni battery"
-    ]
-
-    VOLUME_WORDS = [
-        "volume", "sound level"
-    ]
-
-    if any(w in text_lower for w in TIME_WORDS):
-        now = datetime.now().strftime("%I:%M %p")
-        await update.message.reply_text(
-            f"🕐 Current time: {now}"
-        )
+    # PRIORITY 6: CLASSIFY INTENT (Laptop command vs General chat)
+    # Use Semantic Router to decide if we need the heavy agent pipeline
+    routing = await get_routing_info(text)
+    if routing["level"] in ["simple", "medium", "complex"]:
+        logger.info(f"Intent classified as LAPTOP COMMAND ({routing['level']}). Queuing for agent.")
+        await task_manager.add_to_queue(update, context, text)
         return
 
-    if any(w in text_lower for w in BATTERY_WORDS):
-        battery = psutil.sensors_battery()
-        if battery:
-            plugged = "🔌 Charging" if battery.power_plugged else "🔋 On battery"
-            await update.message.reply_text(
-                f"🔋 Battery: {battery.percent:.0f}%\n{plugged}"
-            )
-        else:
-            await update.message.reply_text("🔋 Battery information not available.")
-        return
-
-    if any(w in text_lower for w in VOLUME_WORDS):
-        await update.message.reply_text(
-            "🔊 Use: set volume to [0-100]"
-        )
-        return
-
-    # PRIORITY 4: ENQUEUE IN TASKMANAGER
-    await task_manager.add_to_queue(update, context, text)
+    # PRIORITY 7: UNKNOWN -> Fast General Chat
+    logger.info(f"Intent classified as GENERAL. Routing to fast LLM fallback.")
+    await handle_unknown(update, context, text)
 
 async def post_init(application):
     """Start the global TaskManager queue processor."""
     task_manager.processor_task = asyncio.create_task(task_manager.start_queue_processor())
+    from opendesk.main import send_startup_notification
+    await send_startup_notification(application.bot)
 
 async def post_stop(application):
     """Cleanly cancel the background queue processor."""
@@ -518,6 +712,8 @@ def run_bot():
     app.add_handler(CommandHandler("screenshots", screenshots_handler))
     app.add_handler(CommandHandler("getscreenshot", getscreenshot_handler))
     app.add_handler(CommandHandler("apps", apps_handler))
+    app.add_handler(CommandHandler("reconnect", reconnect_handler))
+    app.add_handler(CommandHandler("changepin", changepin_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
     app.add_error_handler(error_handler)
