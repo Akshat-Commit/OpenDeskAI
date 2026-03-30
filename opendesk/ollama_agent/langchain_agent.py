@@ -92,8 +92,16 @@ def build_fallback_chain() -> list:
     """
     import opendesk.config as cfg
     
+    # Force reload config
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    
+    mode = os.getenv("USER_MODE", "local").strip().lower()
+    
+    # Debug print
+    print(f"Building chain for mode: {mode}")
+    
     chain = []
-    mode = cfg.USER_MODE or "developer"  # Default to developer if mode is empty (legacy setups)
 
 
     if mode == "developer":

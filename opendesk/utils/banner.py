@@ -38,6 +38,25 @@ def show_banner():
     if IS_HEADLESS:
         return
     console.print(get_banner_renderable())
+    
+    from opendesk.config import USER_MODE
+
+    console.print(
+        f"  Mode: [cyan]{USER_MODE.upper()}[/]"
+    )
+
+    if USER_MODE == "developer":
+        console.print(
+            "  [red]⚡ DEVELOPER MODE[/] - Full 8 model chain active"
+        )
+    elif USER_MODE == "local":
+        console.print(
+            "  [green]🏠 LOCAL MODE[/] - Ollama only"
+        )
+    elif USER_MODE == "cloud":
+        console.print(
+            "  [cyan]☁️ CLOUD MODE[/] - Groq + Ollama fallback"
+        )
 
 def get_mode_renderable(mode: str):
     """Returns the original prominently highlighted mode message."""
