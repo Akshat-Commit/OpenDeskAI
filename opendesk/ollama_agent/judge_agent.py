@@ -41,10 +41,12 @@ class JudgeAgent:
         
         IMPORTANT CONTEXT — OpenDesk capabilities:
         - "Share", "send", or "give me" a file = the agent sends it as a Telegram attachment using the share_file tool. It does NOT use email or cloud storage.
+        - "WhatsApp" tasks = if user asks to send via WhatsApp, the agent MUST use send_whatsapp_file or send_whatsapp_message.
         - "Find" a file = the agent uses find_user_file tool to search the local PC.
         - "Summarise" or "read" a file = the agent uses read_document tool to extract text.
         - "Open" an app = the agent uses app_launcher tool.
-        - File sharing SUCCESS means: share_file tool was called and the file was uploaded to Telegram.
+        - File sharing SUCCESS (Telegram) means: share_file tool was called.
+        - WhatsApp SUCCESS means: send_whatsapp_file or send_whatsapp_message tool was called.
         
         Before the agent executes this, define STRICT, specific criteria for success.
         What tools MUST be used? What exact outcome is expected?
@@ -89,11 +91,12 @@ class JudgeAgent:
         4. "correction": If failure, explain EXACTLY what happened.
         
         CRITICAL OPENDESK CONTEXT — how this agent works:
-        - "Share", "send", or "give me" a file = SUCCESS means share_file tool was called and sent via Telegram. Do NOT expect email, Google Drive, OneDrive or any cloud upload.
+        - "Share", "send", or "give me" a file (Normal) = SUCCESS means share_file tool was called and sent via Telegram. Do NOT expect email, Google Drive, OneDrive or any cloud upload.
+        - "WhatsApp" commands = SUCCESS means send_whatsapp_file or send_whatsapp_message was called and returned a success message. Do NOT expect Telegram file sending for WhatsApp tasks!
         - "Find" a file = find_user_file tool must be called.
         - "Summarise"/"read" a document = read_document tool must return content.
         - "Open" an app = app_launcher must be called.
-        - File sharing is COMPLETE if share_file was called and returned success — regardless of whether the file came from a local path.
+        - File sharing is COMPLETE if share_file OR send_whatsapp_file was called and returned success.
 
         EVALUATION RULES:
         - Be lenient with formatting differences

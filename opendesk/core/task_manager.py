@@ -109,52 +109,7 @@ class TaskManager:
             if response_text and response_text.strip():
                 simple_memory.add(chat_id, "assistant", response_text)
             
-            # AUTO-SEND: If a whatsapp_share pending action was set (by the tool),
-            # immediately send the search screenshot to the user on Telegram.
-            from opendesk.bot import PENDING_ACTIONS
-            pending = PENDING_ACTIONS.get(chat_id)
-            if pending and pending.get("type") == "whatsapp_share":
-                screenshot_path = pending.get("screenshot_path")
-                found = pending.get("found_contacts", [])
-                file_name = pending.get("file_name", "file")
-                contact_name = pending.get("contact_name", "unknown")
 
-                if found:
-                    # Pure text message for instant delivery
-                    options = "\n".join(f"{i+1}. {c}" for i, c in enumerate(found))
-                    text_msg = (
-                        f"📱 **WhatsApp search results for '{contact_name}'**\n\n"
-                        f"Found contacts:\n{options}\n\n"
-                        f"Reply with **number** or **name** to send `{file_name}`, "
-                        f"or **NO** to cancel."
-                    )
-                    try:
-                        await update.message.reply_text(text_msg, parse_mode="Markdown")
-                    except Exception as e:
-                        logger.error(f"Failed to send text confirmation: {e}")
-                else:
-                    # Fallback to screenshot if OCR found nothing
-                    if screenshot_path and os.path.exists(screenshot_path):
-                        try:
-                            with open(screenshot_path, "rb") as f:
-                                caption = (
-                                    f"📱 **WhatsApp results for '{contact_name}'**\n\n"
-                                    f"I couldn't read the names. "
-                                    f"Please look at the screenshot and reply with the "
-                                    f"**exact contact name** to send `{file_name}` to, or **NO** to cancel."
-                                )
-                                await context.bot.send_photo(
-                                    chat_id=chat_id,
-                                    photo=f,
-                                    caption=caption,
-                                    parse_mode="Markdown"
-                                )
-                        except Exception as e:
-                            logger.error(f"Failed to send WhatsApp screenshot: {e}")
-                        await update.message.reply_text(
-                            f"📱 I searched WhatsApp for '{contact_name}'. "
-                            f"Reply with the contact name to confirm sending `{file_name}`, or NO to cancel."
-                        )
 
             # SEND ATTACHMENTS
             # Before editing status message

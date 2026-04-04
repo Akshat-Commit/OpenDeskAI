@@ -10,7 +10,7 @@ from opendesk.utils.session_manager import create_session
 
 _console = Console()
 
-def generate_session_qr(ngrok_url: str, ui=None) -> str:
+def generate_session_qr(ngrok_url: str) -> str:
     """
     Generates a new session and prints a QR code to the terminal.
     Returns the generated session token.
@@ -19,29 +19,18 @@ def generate_session_qr(ngrok_url: str, ui=None) -> str:
         logger.warning("BOT_USERNAME not set. Showing direct-connect instructions instead.")
         if sys.stdout.isatty():
             cols = shutil.get_terminal_size().columns
-            if ui:
-                ui.add_renderable(Text())
-                ui.add_renderable(Text("      NO QR CODE — DIRECT CONNECTION MODE", style="bold white"))
-                ui.add_renderable(Text("      BOT_USERNAME is not set in .env", style="dim grey70"))
-                ui.add_renderable(Text())
-                ui.add_renderable(Text("      How to connect:", style="bold white"))
-                ui.add_renderable(Text("      1. Open Telegram and find your bot"))
-                ui.add_renderable(Text("      2. Send:  /start"))
-                ui.add_renderable(Text("      3. Enter your PIN when prompted (if set)"))
-                ui.add_renderable(Text())
-            else:
-                _console.print()
-                _console.print("─" * cols, style="dim grey70")
-                _console.print("      [bold white]NO QR CODE — DIRECT CONNECTION MODE[/bold white]")
-                _console.print("      [dim grey70]BOT_USERNAME is not set in .env[/dim grey70]")
-                _console.print()
-                _console.print("      [bold white]How to connect:[/bold white]")
-                _console.print("      [green]1.[/green] Open Telegram and find your bot")
-                _console.print("      [green]2.[/green] Send:  [bold white]/start[/bold white]")
-                _console.print("      [green]3.[/green] Enter your PIN when prompted (if set)")
-                _console.print()
-                _console.print("─" * cols, style="dim grey70")
-                _console.print()
+            _console.print()
+            _console.print("─" * cols, style="dim grey70")
+            _console.print("      [bold white]NO QR CODE — DIRECT CONNECTION MODE[/bold white]")
+            _console.print("      [dim grey70]BOT_USERNAME is not set in .env[/dim grey70]")
+            _console.print()
+            _console.print("      [bold white]How to connect:[/bold white]")
+            _console.print("      [green]1.[/green] Open Telegram and find your bot")
+            _console.print("      [green]2.[/green] Send:  [bold white]/start[/bold white]")
+            _console.print("      [green]3.[/green] Enter your PIN when prompted (if set)")
+            _console.print()
+            _console.print("─" * cols, style="dim grey70")
+            _console.print()
         return ""
         
     token = create_session(ngrok_url)
@@ -65,23 +54,14 @@ def generate_session_qr(ngrok_url: str, ui=None) -> str:
     qr.print_ascii(out=f, invert=True)
     qr_str = f.getvalue()
     
-    if ui:
-        for line in qr_str.split("\n"):
-            if line.strip() or line:
-                ui.add_renderable(Text("      " + line))
-        ui.add_renderable(Text())
-        ui.add_renderable(Text("      SCAN WITH PHONE CAMERA TO CONNECT", style="bold white"))
-        ui.add_renderable(Text("      Link expires in 60 seconds.", style="dim grey70"))
-        ui.add_renderable(Text())
-    else:
-        for line in qr_str.split("\n"):
-            if line.strip() or line:
-                print("      " + line)
-        
-        cols = shutil.get_terminal_size().columns
-        print("\n" + "─" * cols)
-        print("      SCAN WITH PHONE CAMERA TO CONNECT")
-        print("      Link expires in 60 seconds.")
-        print("─" * cols + "\n")
+    for line in qr_str.split("\n"):
+        if line.strip() or line:
+            print("      " + line)
+    
+    cols = shutil.get_terminal_size().columns
+    print("\n" + "─" * cols)
+    print("      SCAN WITH PHONE CAMERA TO CONNECT")
+    print("      Link expires in 60 seconds.")
+    print("─" * cols + "\n")
     
     return token

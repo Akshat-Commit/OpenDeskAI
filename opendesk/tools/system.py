@@ -187,6 +187,41 @@ def capture_video(duration: int = 5, save_path: str = None) -> str:
         if cap is not None:
             cap.release()
 
+def _get_whatsapp_path() -> str:
+    """Robustly find the WhatsApp Desktop executable path."""
+    import winreg
+    import os
+    
+    # 1. Check Registry
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\WhatsApp.exe")
+        path, _ = winreg.QueryValueEx(key, "")
+        if os.path.exists(path):
+            return path
+    except Exception:
+        pass
+        
+    # 2. Check Common Script Locations
+    locations = [
+        os.path.expanduser("~/AppData/Local/WhatsApp/WhatsApp.exe"),
+        os.path.expanduser("~/AppData/Local/Programs/WhatsApp/WhatsApp.exe"),
+        "C:/Program Files/WindowsApps/WhatsApp.exe"
+    ]
+    for loc in locations:
+        if os.path.exists(loc):
+            return loc
+            
+    # 3. Check via App Indexer if available
+    try:
+        from opendesk.utils.app_indexer import app_indexer
+        found = app_indexer.find_app("whatsapp")
+        if found and os.path.exists(found):
+            return found
+    except Exception:
+        pass
+        
+    return ""
+
 @register_tool("send_whatsapp_message")
 def send_whatsapp_message(
     contact_name: str,
@@ -204,9 +239,18 @@ def send_whatsapp_message(
     import pyperclip
     
     try:
+        whatsapp_path = _get_whatsapp_path()
+        if not whatsapp_path:
+            return (
+                "❌ WhatsApp Desktop not installed.\n"
+                " Please install from:\n"
+                " microsoft.com/store or whatsapp.com/download\n\n"
+                " After installing run command again."
+            )
+
         # Open WhatsApp
-        subprocess.Popen(["whatsapp:"], shell=True)  # noqa: S602, S607
-        time.sleep(3)
+        subprocess.Popen([whatsapp_path])
+        time.sleep(4)
         
         # Search for contact
         pyautogui.hotkey('ctrl', 'f')
@@ -239,72 +283,191 @@ def send_whatsapp_file(
     filename: str
 ) -> str:
     """
-    Finds a file and sends it to a
+    Finds a file on the PC and sends it to a
     contact on WhatsApp Desktop.
     Use when user says:
-    send [file] to [person] on whatsapp
-    share [file] with [person] on whatsapp
+      send [file] to [person] on whatsapp
+      share [file] with [person] on whatsapp
+
+    HOW IT WORKS:
+    1. Finds the file via file indexer.
+    2. Opens WhatsApp Desktop and searches the contact.
+    3. Takes an in-memory screenshot (never saved to disk).
+    4. Runs OCR directly on the image in RAM.
+    5. Extracts matching contact names.
+    6. Sends a clean TEXT list to Telegram — instant, no upload.
+    7. User replies 1/2/3 to pick the right contact.
+    """
+    import subprocess
+    import time
+    import pyautogui
+    import pytesseract
+    from PIL import ImageGrab
+    from opendesk.utils.file_indexer import file_indexer
+    
+    try:
+        # ── Step 0: Check WhatsApp installed ────────────────────────────
+        whatsapp_path = _get_whatsapp_path()
+        if not whatsapp_path:
+            return (
+                "❌ WhatsApp Desktop not installed.\n"
+                " Please install from:\n"
+                " microsoft.com/store or whatsapp.com/download\n\n"
+                " After installing run command again."
+            )
+
+        # ── Step 1: Find the file ─────────────────────────────────────────
+        results = file_indexer.find_file(filename)
+        if not results:
+            return (
+                f"❌ Could not find '{filename}'.\n"
+                f"Please check the filename and try again."
+            )
+        file_path = results[0][0]
+
+        # ── Step 2: Open WhatsApp ─────────────────────────────────────────
+        subprocess.Popen([whatsapp_path])
+        time.sleep(4)
+        pyautogui.hotkey('win', 'up')  # Maximize for consistent layout
+        time.sleep(0.5)
+
+        # ── Step 3: Search the contact ────────────────────────────────────
+        pyautogui.hotkey('ctrl', 'f')
+        time.sleep(1)
+        pyautogui.typewrite(contact_name, interval=0.05)
+        time.sleep(2.5)  # Let results appear
+
+        # ── Step 4: In-memory screenshot + OCR (no disk I/O) ─────────────
+        img = ImageGrab.grab()  # ~50ms, pure RAM — never saved to disk
+        raw_text = pytesseract.image_to_string(img, config='--psm 6')
+
+        # ── Step 5: Extract candidate contact names ───────────────────────
+        found_contacts = _extract_whatsapp_contacts(raw_text, contact_name)
+
+        # ── Step 6: Send TEXT confirmation to Telegram (no photo upload) ──
+        chat_id = getattr(_tool_context, "chat_id", None)
+        if chat_id is None:
+            return "CONFIRMATION_SKIPPED: No chat context available."
+
+        try:
+            from opendesk.bot import set_whatsapp_contact_selection
+            set_whatsapp_contact_selection(
+                chat_id=chat_id,
+                contact_name=contact_name,
+                filename=filename,
+                file_path=file_path,
+                whatsapp_path=whatsapp_path,
+                found_contacts=found_contacts,
+            )
+        except Exception as e:
+            logger.error(f"Failed to set WhatsApp contact selection: {e}")
+            return f"Error requesting contact selection: {e}"
+
+        count = len(found_contacts)
+        return (
+            f"🔍 Found {count} match(es) for '{contact_name}'. "
+            f"Sent contact list to Telegram.\n"
+            f"AWAITING_CONFIRMATION: Pausing until you pick the right contact."
+        )
+
+    except Exception as e:
+        return f"WhatsApp file send error: {e}"
+
+
+def _extract_whatsapp_contacts(ocr_text: str, search_name: str) -> list:
+    """
+    Parse OCR text from a WhatsApp search result.
+    Returns up to 5 candidate contact names that match the searched name.
+    Falls back to [search_name] if OCR finds nothing useful.
+    """
+    lines = ocr_text.splitlines()
+    search_lower = search_name.lower()
+    candidates = []
+    seen = set()
+
+    # Common WhatsApp UI strings to ignore
+    ui_noise = {
+        "whatsapp", "search", "chats", "status", "calls",
+        "new chat", "new group", "archived", "mute", "unread",
+        "message", "messages", "online", "typing", "yesterday",
+        "today", "ago", "new"
+    }
+
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) < 2 or stripped.isdigit():
+            continue
+        if stripped.lower() in ui_noise:
+            continue
+        if search_lower in stripped.lower():
+            key = stripped.lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(stripped)
+        if len(candidates) >= 5:
+            break
+
+    return candidates if candidates else [search_name]
+
+
+
+def _do_whatsapp_file_send(
+    contact_name: str,
+    file_path: str,
+    whatsapp_path: str,
+    contact_index: int = 0
+) -> str:
+    """
+    Called by bot.py AFTER the user picks which contact to use.
+    Clicks the Nth result in WhatsApp's search sidebar and sends the file.
     """
     import subprocess
     import time
     import pyautogui
     import pyperclip
-    from opendesk.utils.file_indexer import (
-        file_indexer
-    )
-    
+    import os as _os
+    import psutil
+
     try:
-        # Step 1: Find the file
-        results = file_indexer.find_file(
-            filename
+        # Re-open WhatsApp if it's no longer running
+        wa_running = any(
+            "whatsapp" in (p.name() or "").lower()
+            for p in psutil.process_iter(["name"])
         )
-        
-        if not results:
-            return (
-                f"Could not find {filename}. "
-                f"Please check the filename."
-            )
-        
-        file_path = results[0][0]
-        
-        # Step 2: Open WhatsApp
-        subprocess.Popen(["whatsapp:"], shell=True)  # noqa: S602, S607
-        time.sleep(3)
-        
-        # Step 3: Search contact
-        pyautogui.hotkey('ctrl', 'f')
+        if not wa_running:
+            subprocess.Popen([whatsapp_path])
+            time.sleep(4)
+
+        # Navigate to Nth result (0=first, 1=second …)
+        for _ in range(contact_index):
+            pyautogui.press('down')
+            time.sleep(0.3)
+        pyautogui.press('enter')  # Open the chat
         time.sleep(1)
-        pyautogui.typewrite(
-            contact_name,
-            interval=0.05
-        )
-        time.sleep(2)
-        pyautogui.press('enter')
-        time.sleep(1)
-        
-        # Step 4: Attach file
-        # Click attachment button
-        pyautogui.hotkey('ctrl', 'shift', 'a')
-        time.sleep(1)
-        
-        # Type file path in dialog
+
+        # ── Attach file ────────────────────────────────────────────────
+        # Use Alt+A — WhatsApp Desktop attachment shortcut
+        pyautogui.hotkey('alt', 'a')
+        time.sleep(1.5)
+
+        # Paste full path into file dialog filename box
         pyperclip.copy(file_path)
+        pyautogui.hotkey('ctrl', 'a')
         pyautogui.hotkey('ctrl', 'v')
         time.sleep(0.5)
+        pyautogui.press('enter')  # Confirm file selection
+        time.sleep(2)
+
+        # ── Send ────────────────────────────────────────────────────────
         pyautogui.press('enter')
         time.sleep(1)
-        
-        # Step 5: Send
-        pyautogui.press('enter')
-        time.sleep(1)
-        
-        return (
-            f"File {filename} sent to "
-            f"{contact_name} on WhatsApp! ✅"
-        )
-        
+
+        filename = _os.path.basename(file_path)
+        return f"✅ File '{filename}' sent to {contact_name} on WhatsApp!"
+
     except Exception as e:
-        return f"WhatsApp file send error: {e}"
+        return f"WhatsApp send error after contact selection: {e}"
+
 
 @register_tool("play_spotify_music")
 def play_spotify_music(song_name: str) -> str:

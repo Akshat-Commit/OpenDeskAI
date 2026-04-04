@@ -114,7 +114,7 @@ def check_api_raw():
     except Exception:
         return False
 
-async def run_health_checks(ui=None):
+async def run_health_checks():
     """Runs all health checks sequentially with 1.0s timeout to prevent UI freeze."""
     from opendesk.config import USER_MODE
     mode = USER_MODE or "developer"
@@ -139,9 +139,7 @@ async def run_health_checks(ui=None):
     loop = asyncio.get_event_loop()
     
     # Only show Rich UI when running interactively
-    if ui:
-        pass
-    elif not IS_HEADLESS:
+    if not IS_HEADLESS:
         from rich.console import Console as _Con
         _con = _Con()
         _con.print()
@@ -149,26 +147,12 @@ async def run_health_checks(ui=None):
         logger.info("Running health checks in headless/background mode...")
     
     for label, check_func in checks:
-        if ui:
-            # Step 1: Real checks run continuously in background thread, zero blocking
-            loop.run_in_executor(None, check_func)
-            
-            # Step 2: Show original loading dot (○)
-            ui.add_renderable(Text.from_markup(f"      [bold white]○[/bold white]  {label}..."))
-            
-            # Step 3: Wait for smooth loading feel
-            await asyncio.sleep(0.4)
-            
-            # Step 4: REPLACE the loading line with success dot (●)
-            # This is bit-for-bit parity with the original \r behavior
-            ui.update_renderable(Text.from_markup(f"      [bold green]●[/bold green]  {label}"))
-        else:
-            # Fallback to old spinner style
-            loop.run_in_executor(None, check_func)
-            spinner = AnimatedSpinner(f"{label}...")
-            spinner.start()
-            await asyncio.sleep(0.3)
-            spinner.stop(label, status="success")
+        # Fallback to old spinner style
+        loop.run_in_executor(None, check_func)
+        spinner = AnimatedSpinner(f"{label}...")
+        spinner.start()
+        await asyncio.sleep(0.3)
+        spinner.stop(label, status="success")
             
     return True
 

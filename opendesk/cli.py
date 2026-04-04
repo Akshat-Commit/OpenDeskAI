@@ -83,11 +83,17 @@ def start(
         run_setup()
         return
     
+    # Load .env BEFORE checking variables to prevent falling back to local
+    from dotenv import load_dotenv
+    from pathlib import Path
+    load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env", override=True)
+    
     current_mode = mode or os.getenv("USER_MODE", "local").lower()
     os.environ["USER_MODE"] = current_mode # Ensure it's set for the rest of the app
     
     if debug:
         os.environ["LOG_LEVEL"] = "DEBUG"
+
         if not IS_HEADLESS:
             console.print(
                 "  [dim grey70]Debug mode active[/]"
