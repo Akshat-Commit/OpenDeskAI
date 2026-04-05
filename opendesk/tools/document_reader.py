@@ -29,13 +29,21 @@ def read_document(filepath: str) -> str:
     Only allows paths within the user's home directory.
     This is highly useful for answering questions about local files."""
     
-    if not _is_safe_path(filepath):
-        return f"Access denied: '{filepath}' is outside your home directory ({HOME_DIR})."
-    
     abs_path = os.path.abspath(os.path.expanduser(filepath))
     
     if not os.path.exists(abs_path):
-        return f"Error: File '{abs_path}' does not exist."
+        # Auto-resolve relative or bare filenames using our fast background indexer
+        from opendesk.utils.file_indexer import file_indexer
+        matches = file_indexer.find_file(os.path.basename(filepath))
+        if matches:
+            abs_path = matches[0][0]
+            logger.info(f"Auto-resolved {filepath} to indexed path: {abs_path}")
+        else:
+            return f"Error: File '{filepath}' does not exist in the current folder, and could not be found in the system index."
+            
+    if not _is_safe_path(abs_path):
+        return f"Access denied: '{abs_path}' is outside your home directory ({HOME_DIR})."
+
         
     ext = os.path.splitext(abs_path)[1].lower()
     content = ""

@@ -471,60 +471,46 @@ def _do_whatsapp_file_send(
 
 @register_tool("play_spotify_music")
 def play_spotify_music(song_name: str) -> str:
-    """A highly reliable macro that opens Spotify desktop, searches for the exact song, and plays the top result."""
+    """A highly reliable macro that opens Spotify desktop filtered natively to Tracks, and plays the top song result."""
+    import urllib.parse
     try:
-        # 1. Open Spotify via Windows URI
-        subprocess.run(["cmd", "/c", "start", "spotify:"])  # noqa: S607
-        # Give Spotify plenty of time to launch and focus
-        time.sleep(5)
+        # Encode the song name for URL safety
+        safe_song = urllib.parse.quote(song_name)
         
-        # Maximize the window to ensure predictable layout for coordinate fallback
+        # 1. Open Spotify directly into a Track-Filtered search result via URI
+        # This completely hides Albums/Artists, guaranteeing the Top Result is a playable song
+        logger.info(f"Opening Spotify with track filter for: {song_name}")
+        subprocess.run(["cmd", "/c", "start", f"spotify:search:track:{safe_song}"])  # noqa: S607
+        
+        # 2. Wait for Spotify to come to foreground and populate results
+        time.sleep(4)
+        
+        # Maximize the window to ensure predictable focus and coordinates
         pyautogui.hotkey('win', 'up')
         time.sleep(1)
         
-        # 2. Focus and CLEAR the search bar (Ctrl+L in Spotify)
-        pyautogui.hotkey('ctrl', 'l')
-        time.sleep(0.5)
-        pyautogui.hotkey('ctrl', 'a')
-        pyautogui.press('backspace')
-        time.sleep(0.5)
-        
-        # 3. Type song name and submit search
-        logger.info(f"Typing song name: {song_name}")
-        pyautogui.write(song_name, interval=0.05)
-        time.sleep(1) 
-        pyautogui.press('enter')
-        time.sleep(4) # Increased wait for search results to load
-        
-        # 4. Method A: Tab sequence to "Top Result" play button
-        # Usually from search box: Tab -> Clear [x] -> Top/Songs filter -> Top Result Card -> Play Button
-        # We try a few tabs followed by space/enter to hit the play button
-        logger.info("Trying Method A (Tab sequence)...")
-        for _ in range(5):
-            pyautogui.press('tab')
-            time.sleep(0.2)
-        pyautogui.press('enter')
-        time.sleep(2)
-        
-        # 5. Method B (Fallback): Double click the center of the "Top Result" card
-        # On a maximized window, the Top Result card is at roughly x=25%, y=45%
-        logger.info("Trying Method B (Coordinate click fallback)...")
+        # 3. Geometric Click: Natively double-click the first row of the search results
+        # Based on Spotify Desktop UI, the very first track in a list is solidly placed around x=35%, y=14%
+        # Y=14% safely targets the vertical center of the first row (17% was hitting the boundary line)
+        logger.info("Executing geometric double-click on first track...")
         screen_w, screen_h = pyautogui.size()
-        click_x = int(screen_w * 0.25)
-        click_y = int(screen_h * 0.45)
         
-        pyautogui.moveTo(click_x, click_y)
+        click_x = int(screen_w * 0.35)
+        click_y = int(screen_h * 0.14)
+        
+        pyautogui.moveTo(click_x, click_y, duration=0.2)
+        
+        # Click once to steal OS window focus (critical for Electron apps)
+        pyautogui.click()
+        time.sleep(0.5)
+        
+        # Now powerfully double click to trigger playback
         pyautogui.doubleClick()
-        time.sleep(2)
-        
-        # 6. Method C: The 'k' shortcut (Spotify play/pause toggle)
-        # Sometimes focus is on the card but play didn't trigger. 
-        # 'k' is a common media key for several apps including Spotify.
-        pyautogui.press('k')
         time.sleep(1)
         
-        # Final press enter as many Spotify versions play on enter when card is focused
+        # In rare cases where double-click just highlights it, pressing Enter forces playback
         pyautogui.press('enter')
+
         
         return f"Successfully executed Spotify macro: Played '{song_name}'."
     except Exception as e:
