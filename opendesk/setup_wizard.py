@@ -92,7 +92,7 @@ class SetupUI:
         # 3. SELECT STEPS FOR VIEWPORT (SLIDING WINDOW)
         step_renderables = []
         for step in self.steps:
-            step_lines = [Text(step["title"], style="bold grey82 on #2a2a2a")]
+            step_lines = [Text(step["title"], style="bold black on white")]
             for line in step["lines"]:
                 step_lines.append(Text.from_markup("  " + line))
             step_lines.append(Text())
