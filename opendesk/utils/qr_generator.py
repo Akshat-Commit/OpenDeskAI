@@ -10,7 +10,7 @@ from opendesk.utils.session_manager import create_session
 
 _console = Console()
 
-def generate_session_qr(ngrok_url: str) -> str:
+def generate_session_qr(ngrok_url: str, ui=None) -> str:
     """
     Generates a new session and prints a QR code to the terminal.
     Returns the generated session token.

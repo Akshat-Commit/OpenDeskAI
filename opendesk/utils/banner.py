@@ -7,6 +7,15 @@ import sys
 # Detect headless mode (running via PM2 / no interactive terminal)
 IS_HEADLESS = not sys.stdout.isatty()
 
+# Set to True while Rich Live is running so show_banner() is a safe no-op
+# (main.py toggles this; direct console.print inside Live corrupts the buffer)
+_LIVE_ACTIVE = False
+
+def set_live_active(state: bool):
+    """Called by main.py to suppress direct console prints during Live rendering."""
+    global _LIVE_ACTIVE
+    _LIVE_ACTIVE = state
+
 # Force console to use exact terminal width to prevent collapsing
 console = Console(width=shutil.get_terminal_size().columns)
 
@@ -35,7 +44,7 @@ def get_banner_renderable():
 
 def show_banner():
     """Show the professional UPPERCASE banner with hardcoded ASCII art."""
-    if IS_HEADLESS:
+    if IS_HEADLESS or _LIVE_ACTIVE:
         return
     console.print(get_banner_renderable())
     
@@ -70,7 +79,7 @@ def get_mode_renderable(mode: str):
 
 def show_mode_banner(mode: str):
     """Shows a prominent full-width monochromatic mode message."""
-    if IS_HEADLESS or not mode:
+    if IS_HEADLESS or _LIVE_ACTIVE or not mode:
         return
     console.print(get_mode_renderable(mode))
 

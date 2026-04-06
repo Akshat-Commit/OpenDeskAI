@@ -136,7 +136,8 @@ class TaskManager:
                                         chat_id=chat_id,
                                         document=f,
                                         filename=os.path.basename(file_path_str),
-                                        caption=f"📎 {os.path.basename(file_path_str)}"
+                                        caption=f"📎 {os.path.basename(file_path_str)}",
+                                        read_timeout=60, write_timeout=60
                                     )
                             logger.info(f"File sent: {file_path_str}")
                         except Exception as e:
@@ -150,7 +151,10 @@ class TaskManager:
                 log_chat_message("assistant", response_text)
                 if len(response_text) > 4000:
                     response_text = response_text[:4000] + "\n...[truncated]"
-                await update.message.reply_text(response_text)
+                try:
+                    await update.message.reply_text(response_text, read_timeout=30, write_timeout=30)
+                except Exception as e:
+                    logger.error(f"Telegram network timeout while sending final reply: {e}")
                 
             # THEN update status message
             msg = self.status_message

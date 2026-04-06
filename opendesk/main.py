@@ -15,11 +15,12 @@ from rich.live import Live
 from rich.text import Text
 from loguru import logger
 
-from opendesk.config import USER_MODE
+
 from opendesk.utils.banner import (
     show_banner, 
     show_mode_banner, 
     show_completion_banner,
+    set_live_active,
     console
 )
 
@@ -33,7 +34,7 @@ logger.remove()  # Remove default handler
 
 
 # Smart Logging: Show deep python tracebacks to devs on crash, hide them from standard users to keep UI clean
-is_dev = (USER_MODE == "developer")
+is_dev = (os.environ.get("USER_MODE", "developer").lower() == "developer")
 console_level = os.environ.get("LOG_LEVEL", "INFO" if is_dev else "WARNING")
 
 # Display format adjustments
@@ -127,11 +128,15 @@ def run_opendesk():
     import subprocess
     import asyncio
     from opendesk.health_check import run_health_checks
+    # Read USER_MODE HERE (after cli.py has set os.environ["USER_MODE"])
+    from opendesk.config import USER_MODE
     
     ui = None
     live = None
 
     if not IS_HEADLESS:
+        set_live_active(True)  # Suppress direct console.print during Live
+        console.clear()        # Clean slate — prevents double-banner artifact
         ui = StartupUI()
         live = Live(ui.get_renderable(), console=console, auto_refresh=False)
         live.start()
@@ -234,14 +239,12 @@ def run_opendesk():
     if ui:
         ui.add_renderable(Text.from_markup("\n      [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"))
         ui.add_renderable(Text.from_markup("      [dim grey70]Generating secure session link...[/dim grey70]\n"))
-        
-        # ===== QR GENERATION (Inside Context) =====
-        time.sleep(0.5) 
-        token = generate_session_qr(cf_url, ui=ui)
-        
-        # Now stop the live context
+        time.sleep(0.5)
+        # Stop Live FIRST so QR code prints cleanly below the banner
         if live:
             live.stop()
+            set_live_active(False)  # Resume normal console output
+        token = generate_session_qr(cf_url)
     else:
         show_completion_banner()
         token = generate_session_qr(cf_url)

@@ -114,8 +114,13 @@ def check_api_raw():
     except Exception:
         return False
 
-async def run_health_checks():
-    """Runs all health checks sequentially with 1.0s timeout to prevent UI freeze."""
+async def run_health_checks(ui=None):
+    """Runs all health checks sequentially with 1.0s timeout to prevent UI freeze.
+    
+    Args:
+        ui: Optional StartupUI instance. When provided, updates are rendered
+            inside the Rich Live context. When None, falls back to AnimatedSpinner.
+    """
     from opendesk.config import USER_MODE
     mode = USER_MODE or "developer"
     
@@ -138,21 +143,24 @@ async def run_health_checks():
     
     loop = asyncio.get_event_loop()
     
-    # Only show Rich UI when running interactively
-    if not IS_HEADLESS:
-        from rich.console import Console as _Con
-        _con = _Con()
-        _con.print()
-    else:
+    if IS_HEADLESS:
         logger.info("Running health checks in headless/background mode...")
     
     for label, check_func in checks:
-        # Fallback to old spinner style
         loop.run_in_executor(None, check_func)
-        spinner = AnimatedSpinner(f"{label}...")
-        spinner.start()
-        await asyncio.sleep(0.3)
-        spinner.stop(label, status="success")
+        
+        if ui:
+            # Rich Live mode — update the animated dashboard
+            from rich.text import Text as _Text
+            ui.add_renderable(_Text.from_markup(f"      [bold white]○[/bold white]  {label}..."))
+            await asyncio.sleep(0.35)
+            ui.update_renderable(_Text.from_markup(f"      [bold green]●[/bold green]  {label}"))
+        else:
+            # Fallback: plain spinner in terminal (headless / no ui object)
+            spinner = AnimatedSpinner(f"{label}...")
+            spinner.start()
+            await asyncio.sleep(0.35)
+            spinner.stop(label, status="success")
             
     return True
 

@@ -19,7 +19,10 @@ def search_web(query: str, max_results: int = 5) -> str:
             page = context.new_page()
             
             search_url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-            page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+            try:
+                page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as nav_e:
+                logger.warning(f"Playwright navigation interrupted, but parsing loaded DOM: {nav_e}")
             
             html_content = page.content()
             browser.close()
@@ -67,9 +70,9 @@ def read_webpage(url: str) -> str:
             )
             page = context.new_page()
             
-            # Wait until the basic DOM is loaded (timeout 15s to not block the bot forever)
+            # Wait until the basic DOM is loaded (timeout 30s to not block the bot forever)
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception as nav_e:
                 logger.warning(f"Playwright navigation interrupted, but continuing to scrape what landed: {nav_e}")
             

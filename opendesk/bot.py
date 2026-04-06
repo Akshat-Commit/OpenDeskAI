@@ -612,7 +612,10 @@ async def handle_resume(update: Update, context: ContextTypes.DEFAULT_TYPE, chat
     else:
         # No music context = standard connection resume
         USER_PAUSED_STATE[chat_id] = False
-        await update.message.reply_text("✅ Ready for commands!")
+        try:
+            await update.message.reply_text("✅ Ready for commands!", read_timeout=30, write_timeout=30)
+        except Exception as e:
+            logger.warning(f"Failed to send resume text (network error): {e}")
 
 async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
     """Bug 2: Fast LLM fallback for unknown commands using Groq."""
@@ -818,7 +821,17 @@ def run_bot():
         logger.error("No BOT_TOKEN provided, cannot start bot.")
         return
 
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30.0)   # Allow 30s to establish connection (fixes ConnectTimeout)
+        .read_timeout(60.0)      # Allow 60s for long-running responses
+        .write_timeout(30.0)     # Allow 30s for sending messages
+        .pool_timeout(30.0)      # Allow 30s to get a connection from the pool
+        .post_init(post_init)
+        .post_stop(post_stop)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("status", status_handler))

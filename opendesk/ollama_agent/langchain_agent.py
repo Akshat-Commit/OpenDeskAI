@@ -584,10 +584,13 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                         obs = f"Error executing {tool_name}: {str(e)}"
                         logger.error(obs)
 
-
-                
                 # Append tool result back to context
                 messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                
+                # HALT LOOP if human-in-the-loop action is requested
+                if isinstance(obs, str) and "AWAITING_CONFIRMATION" in obs:
+                    logger.info("Tool returned AWAITING_CONFIRMATION. Halting agent loop to wait for user.")
+                    return str(obs), attachments, tool_logs
                 
         except Exception as e:
             error_msg = str(e)

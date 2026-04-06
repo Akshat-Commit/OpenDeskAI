@@ -44,7 +44,24 @@ Command: {command}
 async def get_routing_info(command: str) -> dict:
     """
     Returns routing instructions using gemma3:12b with a fallback to keywords.
+    Bypasses LLM for clear WhatsApp commands for 3x speed boost.
     """
+    command_lower = command.lower()
+    
+    # ── FAST-PASS (3x Faster) ──────────────────────────────────────────
+    # If the user mentions WhatsApp, we go straight to a fast route.
+    # We use 'medium' to keep some history (for "send IT to HIM") 
+    # but skip the Judge for speed.
+    if "whatsapp" in command_lower or "wa " in command_lower:
+        logger.info(f"Fast-pass triggered for WhatsApp: '{command}'")
+        return {
+            "level": "medium",
+            "score": 4,
+            "skip_memory": False,
+            "skip_judge": True,
+            "history_limit": 5
+        }
+        
     try:
         from langchain_ollama import ChatOllama
         llm = ChatOllama(
