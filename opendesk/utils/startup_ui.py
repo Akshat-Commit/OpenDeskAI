@@ -29,7 +29,21 @@ class StartupUI:
 
     def get_renderable(self):
         """Return the current composite renderable for Rich Live."""
-        return Group(*self._items) if self._items else Text("")
+        from rich.panel import Panel
+        import shutil
+        
+        cols, rows = shutil.get_terminal_size()
+        width = max(60, min(cols - 4, 120))
+        
+        content = Group(*self._items) if self._items else Text("")
+        
+        return Panel(
+            content,
+            title="[bold grey82] ◈  OPENDESK STARTUP SEQUENCE  ◈ [/bold grey82]",
+            width=width,
+            padding=(1, 2),
+            border_style="grey82"
+        )
 
     def add_renderable(self, item) -> None:
         """Append a new item (Text, Align, Group…) and refresh the display."""
@@ -53,5 +67,5 @@ class StartupUI:
             try:
                 self.live.update(self.get_renderable())
                 self.live.refresh()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass  # Never crash the startup sequence over a display glitch

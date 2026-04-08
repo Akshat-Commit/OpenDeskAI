@@ -147,8 +147,8 @@ class TaskManager:
                                         photo=f,
                                         caption=f"📎 {os.path.basename(file_path_str)}"
                                     )
-                            # Send as document for all other files ONLY if there is no text response
-                            elif not (response_text and response_text.strip()):
+                            # Send as document for all other files
+                            else:
                                 with open(file_path_str, 'rb') as f:
                                     await context.bot.send_document(
                                         chat_id=chat_id,
@@ -157,8 +157,6 @@ class TaskManager:
                                         caption=f"📎 {os.path.basename(file_path_str)}",
                                         read_timeout=60, write_timeout=60
                                     )
-                            else:
-                                logger.info(f"Skipping document attachment to avoid double response. File: {file_path_str}")
                                 
                             logger.info(f"File attachment processed: {file_path_str}")
                         except Exception as e:

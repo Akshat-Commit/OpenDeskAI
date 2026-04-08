@@ -3,7 +3,6 @@ from loguru import logger
 import sys
 import shutil
 from rich.console import Console
-from rich.text import Text
 
 from opendesk.config import BOT_USERNAME
 from opendesk.utils.session_manager import create_session
@@ -54,14 +53,25 @@ def generate_session_qr(ngrok_url: str, ui=None) -> str:
     qr.print_ascii(out=f, invert=True)
     qr_str = f.getvalue()
     
-    for line in qr_str.split("\n"):
-        if line.strip() or line:
-            print("      " + line)
-    
-    cols = shutil.get_terminal_size().columns
-    print("\n" + "─" * cols)
-    print("      SCAN WITH PHONE CAMERA TO CONNECT")
-    print("      Link expires in 60 seconds.")
-    print("─" * cols + "\n")
+    from rich.text import Text
+    if ui:
+        for line in qr_str.split("\n"):
+            if line.strip() or line:
+                ui.add_renderable(Text("      " + line, no_wrap=True))
+                
+        ui.add_renderable(Text())
+        ui.add_renderable(Text.from_markup("      [bold white]SCAN WITH PHONE CAMERA TO CONNECT[/bold white]"))
+        ui.add_renderable(Text.from_markup("      [dim grey70]Link expires in 60 seconds.[/dim grey70]"))
+        ui.add_renderable(Text())
+    else:
+        for line in qr_str.split("\n"):
+            if line.strip() or line:
+                print("      " + line)
+        
+        cols = shutil.get_terminal_size().columns
+        print("\n" + "─" * cols)
+        print("      SCAN WITH PHONE CAMERA TO CONNECT")
+        print("      Link expires in 60 seconds.")
+        print("─" * cols + "\n")
     
     return token

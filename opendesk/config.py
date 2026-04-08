@@ -19,7 +19,6 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # User mode: "developer", "local", or "cloud" (set by setup_wizard or .env)
 USER_MODE = os.getenv("USER_MODE", "local").strip().lower()
-print(f"USER_MODE loaded: {USER_MODE}")
 
 # Environment: "production" or "testing"
 OPENDESK_ENV = os.getenv("OPENDESK_ENV", "production").strip().lower()

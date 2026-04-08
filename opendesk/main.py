@@ -87,7 +87,7 @@ def setup_cloudflare():
         # Pad the intercepted output
         for line in captured.getvalue().split("\n"):
             if line.strip():
-                print("      " + line)
+                logger.debug("Cloudflare: " + line.strip())
                 
         public_url = tunnel.tunnel
         logger.debug(f"Cloudflare tunnel active at: {public_url}")
@@ -128,8 +128,12 @@ def run_opendesk():
     import subprocess
     import asyncio
     from opendesk.health_check import run_health_checks
+    from opendesk.utils.instance_lock import acquire_lock
     # Read USER_MODE HERE (after cli.py has set os.environ["USER_MODE"])
     from opendesk.config import USER_MODE
+    
+    # 0. Acquire system lock to prevent multiple instances
+    _lock_handle = acquire_lock()
     
     ui = None
     live = None
@@ -204,11 +208,32 @@ def run_opendesk():
         ui.add_renderable(Text.from_markup("      [bold white]○[/bold white]  Waking up background indexers..."))
     file_indexer.start_background_indexing()
     app_indexer.start_background_indexing()
-    time.sleep(0.4)
-    if ui:
-        ui.update_renderable(Text.from_markup("      [bold green]●[/bold green]  Indexers running in background"))
-    else:
-        print("      ●  Indexers running in background")
+    
+    # Wait 2 seconds for initial index
+    time.sleep(2)
+    
+    # Check if index has data
+    import sqlite3
+    try:
+        conn = sqlite3.connect("opendesk.db")
+        count = conn.execute("SELECT COUNT(*) FROM file_index").fetchone()[0]
+        conn.close()
+        
+        if count > 0:
+            if ui:
+                ui.update_renderable(Text.from_markup(f"      [bold green]●[/bold green]  Indexers running in background ({count} files)"))
+            else:
+                print(f"      ●  Indexers running in background ({count} files)")
+        else:
+            if ui:
+                ui.update_renderable(Text.from_markup("      [bold green]●[/bold green]  Indexers running in background"))
+            else:
+                print("      ●  Indexers running in background")
+    except Exception as e:
+        if ui:
+            ui.update_renderable(Text.from_markup("      [bold green]●[/bold green]  Indexers running in background"))
+        else:
+            print("      ●  Indexers running in background")
     
     # ===== SECTION HEADERS =====
     if ui:
@@ -240,11 +265,11 @@ def run_opendesk():
         ui.add_renderable(Text.from_markup("\n      [bold green]●[/bold green] [bold white]OPENDESK CORE SERVICES READY[/bold white]"))
         ui.add_renderable(Text.from_markup("      [dim grey70]Generating secure session link...[/dim grey70]\n"))
         time.sleep(0.5)
-        # Stop Live FIRST so QR code prints cleanly below the banner
+        # Generate QR completely inside the UI Box
+        token = generate_session_qr(cf_url, ui=ui)
         if live:
             live.stop()
             set_live_active(False)  # Resume normal console output
-        token = generate_session_qr(cf_url)
     else:
         show_completion_banner()
         token = generate_session_qr(cf_url)
