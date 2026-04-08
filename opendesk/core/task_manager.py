@@ -169,10 +169,6 @@ class TaskManager:
             if response_text and response_text.strip():
                 log_chat_message("assistant", response_text)
                 
-                # Append encouraging message
-                encouragement = "\n\n✨ _Is there anything else you want to ask?_"
-                response_text = f"{response_text.strip()}{encouragement}"
-                
                 if len(response_text) > 4000:
                     response_text = response_text[:4000] + "\n...[truncated]"
                 try:
