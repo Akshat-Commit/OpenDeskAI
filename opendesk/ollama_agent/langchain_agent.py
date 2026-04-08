@@ -55,8 +55,13 @@ CORE RULES:
 2. PERSONA: Be professional, friendly, and helpful. 
    - Start with: "Hey! OpenDesk here! How can I help?"
    - Do NOT mention system stats (CPU/RAM) unless specifically asked.
-3. FILE SHARING: Use `share_file` to find and send files via Telegram (default).
-   - When successful, output exactly: "Shared with you."
+3. FILE OPERATIONS RULES:
+   - When user asks where is a file: Use find_file_location tool
+   - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders
+   - When user asks to summarize file: Use read_and_summarize tool
+   - NEVER say file not found without trying file_indexer first!
+   - File indexer has 19000+ files indexed. Always use it before saying not found
+    - For banner1.png, document.pdf etc: Just call find_file_location tool. Do not manually search paths!
 4. WHATSAPP RULES:
    - For text messages: Use `send_whatsapp_message` tool.
    - For file sharing via WhatsApp: Use `send_whatsapp_file` tool.
@@ -65,10 +70,76 @@ CORE RULES:
    Example: 'Send hi to Aditya' -> send_whatsapp_message(contact_name='Aditya', message='hi')
 5. CONFIRMATION GATE: For Gmail or other non-WhatsApp apps, call `request_confirmation` before sending. Stop and wait for user reply.
    - If command starts with [USER CONFIRMED] -> proceed.
-5. MACROS: Tools like `play_spotify_music` and `send_whatsapp_message` are macro-based. 
+6. MACROS: Tools like `play_spotify_music` and `send_whatsapp_message` are macro-based. 
    - Ensure the app is focused before calling.
    - If a macro fails, do NOT claim success. Describe what you saw on the screen.
-6. ARCHITECTURE: Use native tools (Wait, Spotify, Volume) first. Use `open_app` for settings/apps. Use `take_screenshot` before clicking UI elements."""
+7. ARCHITECTURE: Use native tools (Wait, Spotify, Volume) first. Use `open_app` for settings/apps. Use `take_screenshot` before clicking UI elements.
+
+DOCUMENT SUMMARIZATION RULES:
+
+When user asks to summarize:
+
+1. First find the file using
+   file indexer or share_file tool
+
+2. Read the content completely
+
+3. Detect summary style from message:
+   - short/brief = 3-4 lines
+   - points/bullets = bullet list
+   - detail/full = with headings
+   - default = professional format
+
+4. Format response like this:
+
+   DEFAULT FORMAT:
+   📄 *[Filename]*
+   
+   *📋 Overview*
+   [2 line overview]
+   
+   *🔑 Key Points*
+   • [point 1]
+   • [point 2]
+   • [point 3]
+   
+   *💡 Conclusion*
+   [1 line conclusion]
+
+   SHORT FORMAT:
+   📄 *[Filename]*
+   [3-4 lines summary]
+
+   POINTS FORMAT:
+   📄 *[Filename]*
+   _[1-line brief overview]_
+   
+   🎯 *[Brief Topic 1]:* [point 1]
+   📈 *[Brief Topic 2]:* [point 2]
+   💡 *[Brief Topic 3]:* [point 3]
+
+   DETAIL FORMAT:
+   📄 *[Filename]*
+   
+   *📋 Introduction*
+   [paragraph]
+   
+   *📌 Main Content*
+   [detailed sections]
+   
+   *💡 Key Takeaways*
+   • [points]
+   
+   *✅ Conclusion*
+   [paragraph]
+
+5. NEVER send raw file content
+   Always send formatted summary only
+   
+6. Use Telegram Markdown formatting:
+   *bold* for headings
+   _italic_ for emphasis
+   • for bullet points"""
 
 
 
@@ -271,6 +342,86 @@ def _parse_hallucinated_tool_call(text: str):
             pass
 
     return None, None
+
+def format_summary(
+    content: str,
+    style: str = "default"
+) -> str:
+    
+    if style == "short":
+        # 3-4 lines maximum
+        # Key points only
+        prompt = (
+            f"Summarize in 3-4 lines only:\n"
+            f"{content}"
+        )
+    
+    elif style == "brief":
+        # One paragraph
+        prompt = (
+            f"Write one paragraph summary:\n"
+            f"{content}"
+        )
+    
+    elif style == "points":
+        # Bullet points
+        prompt = (
+            f"Summarize as bullet points:\n"
+            f"{content}"
+        )
+    
+    elif style == "detail":
+        # Full detailed summary
+        prompt = (
+            f"Write detailed summary with "
+            f"headings and subheadings:\n"
+            f"{content}"
+        )
+    
+    else:
+        # Default professional summary
+        prompt = (
+            f"Write a professional summary "
+            f"with these sections:\n"
+            f"• Overview (2 lines)\n"
+            f"• Key Points (3-5 bullets)\n"
+            f"• Conclusion (1 line)\n\n"
+            f"Content:\n{content}"
+        )
+    
+    return prompt
+
+def detect_summary_style(
+    message: str
+) -> str:
+    msg = message.lower()
+    
+    if any(w in msg for w in [
+        "short", "brief", "quick",
+        "small", "chhota", "thoda"
+    ]):
+        return "short"
+    
+    elif any(w in msg for w in [
+        "points", "bullets", "list",
+        "point by point"
+    ]):
+        return "points"
+    
+    elif any(w in msg for w in [
+        "detail", "detailed", "full",
+        "complete", "poora", "depth"
+    ]):
+        return "detail"
+    
+    elif any(w in msg for w in [
+        "brief", "one para",
+        "paragraph"
+    ]):
+        return "brief"
+    
+    else:
+        return "default"
 
 async def run(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None, routing_info: Optional[dict] = None) -> Tuple[str, List[str]]:
     """
@@ -546,6 +697,10 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                         
                         # BLOCKING TOOL: Run in thread to keep event loop free
                         obs = await asyncio.to_thread(func, **tool_args)
+                        
+                        if tool_name == "read_and_summarize" and isinstance(obs, str):
+                            style = detect_summary_style(user_message)
+                            obs = format_summary(obs, style)
                         
                         tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
                         

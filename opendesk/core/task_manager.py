@@ -44,17 +44,28 @@ class TaskManager:
         """Adds a new command to the global queue."""
         queue_size = self.queue.qsize()
         
-        if self.is_running:
-            # Tell user command is queued
-            await update.message.reply_text(
-                f"⏳ Added to queue ({queue_size + 1} waiting)"
+        if self.is_running and queue_size > 0:
+            # Save queue message reference
+            queue_msg = (
+                await update.message.reply_text(
+                    f"⏳ Added to queue "
+                    f"({queue_size} waiting)"
+                )
             )
-        
-        await self.queue.put({
-            "update": update,
-            "context": context,
-            "command": command
-        })
+            
+            await self.queue.put({
+                "update": update,
+                "context": context,
+                "command": command,
+                "queue_msg": queue_msg
+            })
+        else:
+            await self.queue.put({
+                "update": update,
+                "context": context,
+                "command": command,
+                "queue_msg": None
+            })
     
     async def cancel_current_task(self):
         """Cancels the currently running task if any."""
@@ -69,6 +80,7 @@ class TaskManager:
         update = task_data["update"]
         context = task_data["context"]
         command = task_data["command"]
+        queue_msg = task_data.get("queue_msg")
         chat_id = update.message.chat_id
         
         # Add current user command to memory
@@ -82,8 +94,14 @@ class TaskManager:
         
         log_chat_message("user", command)
         
-        # Send status message
-        self.status_message = await update.message.reply_text("⏳ Working on it...")
+        if queue_msg:
+            self.status_message = queue_msg
+            try:
+                await self.status_message.edit_text("⚙️ Working on it...")
+            except Exception as e:
+                logger.debug(f"Failed to edit queue message: {e}")
+        else:
+            self.status_message = await update.message.reply_text("⏳ Working on it...")
         
         async def status_callback(status: str):
             """Update the status message in real-time."""
@@ -129,8 +147,8 @@ class TaskManager:
                                         photo=f,
                                         caption=f"📎 {os.path.basename(file_path_str)}"
                                     )
-                            # Send as document for all other files
-                            else:
+                            # Send as document for all other files ONLY if there is no text response
+                            elif not (response_text and response_text.strip()):
                                 with open(file_path_str, 'rb') as f:
                                     await context.bot.send_document(
                                         chat_id=chat_id,
@@ -139,7 +157,10 @@ class TaskManager:
                                         caption=f"📎 {os.path.basename(file_path_str)}",
                                         read_timeout=60, write_timeout=60
                                     )
-                            logger.info(f"File sent: {file_path_str}")
+                            else:
+                                logger.info(f"Skipping document attachment to avoid double response. File: {file_path_str}")
+                                
+                            logger.info(f"File attachment processed: {file_path_str}")
                         except Exception as e:
                             logger.error(f"Failed to send file: {e}")
                             await update.message.reply_text(f"❌ Found file but could not send it: {e}")
@@ -149,12 +170,21 @@ class TaskManager:
             # Send text response
             if response_text and response_text.strip():
                 log_chat_message("assistant", response_text)
+                
+                # Append encouraging message
+                encouragement = "\n\n✨ _Is there anything else you want to ask?_"
+                response_text = f"{response_text.strip()}{encouragement}"
+                
                 if len(response_text) > 4000:
                     response_text = response_text[:4000] + "\n...[truncated]"
                 try:
-                    await update.message.reply_text(response_text, read_timeout=30, write_timeout=30)
+                    await update.message.reply_text(response_text, read_timeout=30, write_timeout=30, parse_mode="Markdown")
                 except Exception as e:
-                    logger.error(f"Telegram network timeout while sending final reply: {e}")
+                    # Fallback without Markdown if parsing fails
+                    try:
+                        await update.message.reply_text(response_text, read_timeout=30, write_timeout=30)
+                    except Exception as e_inner:
+                        logger.error(f"Telegram network timeout while sending final reply: {e_inner}")
                 
             # THEN update status message
             msg = self.status_message
