@@ -198,7 +198,7 @@ def _get_whatsapp_path() -> str:
         path, _ = winreg.QueryValueEx(key, "")
         if os.path.exists(path):
             return path
-    except Exception:
+    except Exception:  # noqa: S110
         pass
         
     # 2. Check Common Script Locations
@@ -217,7 +217,7 @@ def _get_whatsapp_path() -> str:
         found = app_indexer.find_app("whatsapp")
         if found and os.path.exists(found):
             return found
-    except Exception:
+    except Exception:  # noqa: S110
         pass
         
     return ""
@@ -249,7 +249,7 @@ def send_whatsapp_message(
             )
 
         # Open WhatsApp
-        subprocess.Popen([whatsapp_path])
+        subprocess.Popen([whatsapp_path])  # noqa: S603
         time.sleep(4)
         
         # Search for contact
@@ -326,7 +326,7 @@ def send_whatsapp_file(
         file_path = results[0][0]
 
         # ── Step 2: Open WhatsApp ─────────────────────────────────────────
-        subprocess.Popen([whatsapp_path])
+        subprocess.Popen([whatsapp_path])  # noqa: S603
         time.sleep(4)
         pyautogui.hotkey('win', 'up')  # Maximize for consistent layout
         time.sleep(0.5)
@@ -435,7 +435,7 @@ def _do_whatsapp_file_send(
             for p in psutil.process_iter(["name"])
         )
         if not wa_running:
-            subprocess.Popen([whatsapp_path])
+            subprocess.Popen([whatsapp_path])  # noqa: S603
             time.sleep(4)
 
         # Navigate to Nth result (0=first, 1=second …)
@@ -480,7 +480,7 @@ def play_spotify_music(song_name: str) -> str:
         # 1. Open Spotify directly into a Track-Filtered search result via URI
         # This completely hides Albums/Artists, guaranteeing the Top Result is a playable song
         logger.info(f"Opening Spotify with track filter for: {song_name}")
-        subprocess.run(["cmd", "/c", "start", f"spotify:search:track:{safe_song}"])  # noqa: S607
+        subprocess.run(["cmd", "/c", "start", f"spotify:search:track:{safe_song}"])  # noqa: S603, S607
         
         # 2. Wait for Spotify to come to foreground and populate results
         time.sleep(4)

@@ -82,6 +82,12 @@ class CreatePowerPointInput(BaseModel):
     bullets: Optional[List[str]] = Field(default=None, description="A list of string bullet points to add to the second slide.")
     filepath: Optional[str] = Field(default=None, description="Optional save path.")
 
+class FindFileLocationInput(BaseModel):
+    filename: str = Field(description="Exact filename to find")
+
+class ReadAndSummarizeInput(BaseModel):
+    filename: str = Field(description="Filename to read and summarize")
+
 # Mapping of tool names to their strict Pydantic Schemas
 # Any tool not in this dictionary will use LangChain's default argument inference.
 TOOL_SCHEMAS = {
@@ -106,4 +112,6 @@ TOOL_SCHEMAS = {
     "create_word_doc": CreateWordDocInput,
     "create_excel_file": CreateExcelFileInput,
     "create_powerpoint": CreatePowerPointInput,
+    "find_file_location": FindFileLocationInput,
+    "read_and_summarize": ReadAndSummarizeInput,
 }

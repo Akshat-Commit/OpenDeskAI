@@ -7,3 +7,6 @@ select = [
     "F401",
     "S",     # Bandit (Security)
 ]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101"]

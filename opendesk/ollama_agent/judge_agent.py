@@ -44,7 +44,8 @@ class JudgeAgent:
         - "WhatsApp" tasks = if user asks to send via WhatsApp, the agent MUST use send_whatsapp_file or send_whatsapp_message.
         - "Find" a file = the agent uses find_user_file tool to search the local PC.
         - "Summarise" or "read" a file = the agent uses read_document tool to extract text.
-        - "Open" an app = the agent uses app_launcher tool.
+        - "Open" an app or website = the agent uses app_launcher, search_web, or read_webpage tools.
+        - "Play on YouTube", "search YouTube", "open YouTube" = SUCCESS means search_web tool was called with open_in_browser=True and platform='youtube'. The browser will open the YouTube search page. This IS task completion. Do NOT require app_launcher for YouTube tasks.
         - File sharing SUCCESS (Telegram) means: share_file tool was called.
         - WhatsApp SUCCESS means: send_whatsapp_file or send_whatsapp_message tool was called.
         
@@ -95,7 +96,7 @@ class JudgeAgent:
         - "WhatsApp" commands = SUCCESS means send_whatsapp_file or send_whatsapp_message was called and returned a success message. Do NOT expect Telegram file sending for WhatsApp tasks!
         - "Find" a file = find_user_file tool must be called.
         - "Summarise"/"read" a document = read_document tool must return content.
-        - "Open" an app = app_launcher must be called.
+        - "Open" an app or website = app_launcher, search_web, or read_webpage must be called.
         - File sharing is COMPLETE if share_file OR send_whatsapp_file was called and returned success.
 
         EVALUATION RULES:

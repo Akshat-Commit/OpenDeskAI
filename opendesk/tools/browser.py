@@ -3,11 +3,27 @@ from loguru import logger
 from opendesk.tools.registry import register_tool
 from bs4 import BeautifulSoup
 
-import urllib.parse
 
 @register_tool("search_web")
-def search_web(query: str, max_results: int = 5) -> str:
-    """Searches the internet for the given query and returns top results with URLs and snippets."""
+def search_web(query: str, max_results: int = 5, open_in_browser: bool = False, platform: str = "google") -> str:
+    """Searches the internet for the given query and returns top results with URLs and snippets. Can also physically open a browser on a specific platform (youtube, google)."""
+    if open_in_browser:
+        import urllib.parse
+        try:
+            if platform.lower() == 'youtube':
+                import webbrowser
+                search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+                webbrowser.open(search_url)
+                return f"✅ Opened YouTube search for: {query} (click to play)"
+            else:
+                import webbrowser
+                search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+                webbrowser.open(search_url)
+                return f"✅ Opened Google search for: {query}"
+        except Exception as e:
+            return f"Failed to open browser directly: {e}"
+
+
     try:
         from playwright.sync_api import sync_playwright
         

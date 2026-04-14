@@ -12,7 +12,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
-from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GROQ_API_KEY_1, GROQ_API_KEY_2, GITHUB_API_KEY  # type: ignore
+from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GROQ_API_KEY_1, GROQ_API_KEY_2, GROQ_API_KEY_3, GITHUB_API_KEY  # type: ignore
 from opendesk.tools.registry import _TOOLS  # type: ignore
 from opendesk.tools.schemas import TOOL_SCHEMAS
 
@@ -58,12 +58,14 @@ CORE RULES:
     - ENCOURAGEMENT: After successfully fulfilling a specific task or answering a non-trivial query, append a varied, friendly follow-up question (e.g., "Is there anything else you want to ask?", "What's next?", "How else can I help?"). 
     - AVOID the encouragement suffix for simple greetings, introductions, or casual chit-chat. Keep those natural.
 3. FILE OPERATIONS RULES:
-   - When user asks where is a file: Use find_file_location tool
-   - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders
-   - When user asks to summarize file: Use read_and_summarize tool DIRECTLY. Do NOT use share_file first.
-   - NEVER say file not found without trying file_indexer first!
-   - File indexer has 19000+ files indexed. Always use it before saying not found
-   - For banner1.png, document.pdf etc: Just call find_file_location tool. Do not manually search paths!
+   - When user asks for the latest/recent/newest file: Use find_latest_file tool. NEVER use finduserfile.
+   - When user asks where a file is by name: Use find_file_location tool. Do not manually search paths.
+   - When user asks to summarize the latest file: 
+       -> Step 1: Use find_latest_file tool to get the path.
+       -> Step 2: Pass that path to the read_and_summarize tool directly. Do NOT use share_file for this.
+   - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders.
+   - NEVER use the hallucinated 'finduserfile' tool. It does not exist.
+   - NEVER say file not found without trying file index tools first!
 4. WHATSAPP RULES:
    - For text messages: Use `send_whatsapp_message` tool.
    - For file sharing via WhatsApp: Use `send_whatsapp_file` tool.
@@ -77,6 +79,20 @@ CORE RULES:
    - If a macro fails, do NOT claim success. Describe what you saw on the screen.
 7. ARCHITECTURE: Use native tools (Wait, Spotify, Volume) first. Use `open_app` for settings/apps. Use `take_screenshot` before clicking UI elements.
 8. CONVERSATIONAL RECOVERY: If the user's intent is unclear, the file is not found, or you do not have a tool to fulfill the request, DO NOT pretend to execute a tool and DO NOT silently fail. Instead, act authentically as humans do. Ask 1 short, intelligent clarifying question to figure out exactly what the user wants.
+9. WEB SEARCH: If you are asked about the latest news, current prices, weather, or lack offline knowledge to answer a question, you MUST automatically use the `search_web` tool to find the answer.
+
+BROWSER RULES - VERY IMPORTANT:
+You CAN and MUST control the browser! You have full access to the laptop!
+- When user says search youtube for X:
+  → ALWAYS call search_web(query='X', open_in_browser=True, platform='youtube')
+- When user says google something:
+  → ALWAYS call search_web(query='something', open_in_browser=True, platform='google')
+- When user says open website:
+  → ALWAYS call read_webpage tool or open_application('chrome')
+NEVER say you cannot do these things! NEVER refuse browser commands! NEVER suggest user to do it manually! YOU control the laptop - just do it!
+Examples:
+'search youtube for lofi' → search_web(query='lofi music', open_in_browser=True, platform='youtube')
+'google latest news' → search_web(query='latest news today', open_in_browser=True, platform='google')
 
 DOCUMENT SUMMARIZATION RULES:
 
@@ -186,7 +202,11 @@ def build_fallback_chain() -> list:
             # 2. Groq Key 2 - llama-3.3-70b-versatile
             chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
             
-            # 3. GitHub - gpt-4o-mini
+            # 3. Groq Key 3 - llama-3.3-70b-versatile
+            if GROQ_API_KEY_3:
+                chain.append({"name": "Groq Llama 70B (Key 3)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+
+            # 4. GitHub - gpt-4o-mini
             if GITHUB_API_KEY:
                 try:
                     from langchain_openai import ChatOpenAI  # type: ignore
@@ -207,7 +227,11 @@ def build_fallback_chain() -> list:
             # 2. Groq Key 2 - llama-3.3-70b-versatile
             chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
 
-            # 3. GitHub - gpt-4o-mini
+            # 3. Groq Key 3 - llama-3.3-70b-versatile
+            if GROQ_API_KEY_3:
+                chain.append({"name": "Groq Llama 70B (Key 3)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+
+            # 4. GitHub - gpt-4o-mini
             if GITHUB_API_KEY:
                 try:
                     from langchain_openai import ChatOpenAI  # type: ignore
@@ -323,6 +347,16 @@ def _parse_hallucinated_tool_call(text: str):
             
     # Pattern 4: Relaxed JSON matching
     match = re.search(r'\{\s*"name"\s*:\s*"([\w]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}', text, re.DOTALL)
+    if match:
+        tool_name = match.group(1)
+        try:
+            tool_args = json.loads(match.group(2))
+            return tool_name, tool_args
+        except json.JSONDecodeError:
+            pass
+
+    # Pattern 4.5: tool_name{"args"} format (models often drop the <function> tags)
+    match = re.search(r'(\w+)\s*(\{.*?\})', text, re.DOTALL)
     if match:
         tool_name = match.group(1)
         try:
@@ -462,7 +496,7 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
         # SPEED OPTIMIZATION A: Simple Command Bypassing
         # If the Executor ONLY used simple tools (or didn't use any tools but gave a response), skip the Judge.
         used_tools = [log["name"] for log in attempt_logs] if attempt_logs else []
-        is_simple_task = all(t in SIMPLE_TOOLS for t in used_tools)
+        is_simple_task = bool(used_tools) and all(t in SIMPLE_TOOLS for t in used_tools)
         
         if is_simple_task and not current_correction:
             logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple command.")
@@ -492,7 +526,7 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
         else:
             # FAILURE: Record mismatch and retry
             logger.warning(f"Judge rejected response: {evaluation['correction']}")
-            current_correction = f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}. Please try again and ensure you call the correct tools."
+            current_correction = f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}. Please try again, but DO NOT re-run tools or steps that have already successfully completed."
             
     return f"I tried {max_supervisor_retries} times but could not complete this task. Final issue: {current_correction}", []
 
@@ -687,6 +721,7 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
                 
+                from opendesk.utils.status_messages import get_status, get_completion
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
                 func = _TOOLS.get(tool_name)
@@ -695,14 +730,11 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 else:
                     try:
                         if status_callback:
-                            await status_callback(f"⚙️ Executing: {tool_name}...")
+                            beautiful_status = get_status(tool_name)
+                            await status_callback(beautiful_status)
                         
                         # BLOCKING TOOL: Run in thread to keep event loop free
                         obs = await asyncio.to_thread(func, **tool_args)
-                        
-                        if tool_name == "read_and_summarize" and isinstance(obs, str):
-                            style = detect_summary_style(user_message)
-                            obs = format_summary(obs, style)
                         
                         tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
                         

@@ -8,7 +8,6 @@ import sys
 import itertools
 import asyncio
 from typing import Optional
-from rich.text import Text
 
 # Detect headless mode (running via PM2 / no interactive terminal)
 IS_HEADLESS = not sys.stdout.isatty()

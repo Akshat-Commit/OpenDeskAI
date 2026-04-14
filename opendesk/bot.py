@@ -689,7 +689,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # PRIORITY 4: TIME / BATTERY / VOLUME (Hardcoded Quick Response)
     TIME_WORDS = ["time", "what time", "current time", "time is it", "time it is", "kitna baja", "baje hain"]
     BATTERY_WORDS = ["battery", "charge", "kitni battery"]
-    VOLUME_WORDS = ["volume", "sound level"]
 
     if any(w in text_lower for w in TIME_WORDS):
         now = datetime.now().strftime("%I:%M %p")
@@ -703,10 +702,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🔋 Battery: {battery.percent:.0f}%\n{plugged}")
         else:
             await update.message.reply_text("🔋 Battery information not available.")
-        return
-
-    if any(w in text_lower for w in VOLUME_WORDS):
-        await update.message.reply_text("🔊 Use: set volume to [0-100]")
         return
 
     # PRIORITY 5: CONTEXT AWARE RESUME

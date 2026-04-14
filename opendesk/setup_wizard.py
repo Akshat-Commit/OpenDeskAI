@@ -168,7 +168,7 @@ class SetupUI:
                         decoded = char.decode('utf-8', errors='ignore')
                         if decoded and (decoded.isprintable() or decoded.isnumeric()):
                             self.current_input += decoded
-                    except Exception:
+                    except Exception:  # noqa: S110
                         pass
                 
                 self.refresh()
@@ -215,7 +215,7 @@ def run_setup():
             ollama_found = False
             recommended_model = "gemma3:12b" if ram >= 12 else "gemma3:4b"
             try:
-                subprocess.run(["ollama", "--version"], capture_output=True, check=True)  # noqa: S603
+                subprocess.run(["ollama", "--version"], capture_output=True, check=True)  # noqa: S603, S607
                 ui.append_text("Ollama service responding.")
                 ui.append_text(f"Recommended model: {recommended_model}")
                 ollama_found = True
@@ -386,7 +386,7 @@ def run_setup():
             ui.append_text("1. Open @BotFather in Telegram")
             while True:
                 token = ui.ask("Paste your Bot Token (? for help):", default=env_values.get("BOT_TOKEN"))
-                if token == "?":
+                if token == "?":  # noqa: S105
                     ui.append_text("  \ud83d\udca1 Open Telegram \u2192 Search @BotFather \u2192 Send /newbot")
                     ui.append_text("     Give your bot a name \u2192 Copy the token it sends you.")
                 else:

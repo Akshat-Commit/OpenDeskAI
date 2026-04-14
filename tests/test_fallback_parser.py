@@ -31,7 +31,7 @@ def _parse_hallucinated_tool_call(text: str):
                     
                 if tool_args: # Only return if we actually found kwargs
                     return tool_name, tool_args
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 

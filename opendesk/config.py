@@ -10,6 +10,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 GROQ_API_KEY_1 = os.getenv("GROQ_API_KEY_1", os.getenv("GROQ_API_KEY", ""))
 GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2", "")
+GROQ_API_KEY_3 = os.getenv("GROQ_API_KEY_3", "")
 GROQ_API_KEY = GROQ_API_KEY_1 # Default alias
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GITHUB_API_KEY = os.getenv("GITHUB_API_KEY", "")

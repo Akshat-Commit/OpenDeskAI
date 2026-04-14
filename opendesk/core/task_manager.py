@@ -10,6 +10,28 @@ from telegram import Message # type: ignore
 
 from opendesk.core.simple_memory import simple_memory
 
+def get_initial_status(command: str) -> str:
+    cmd = command.lower()
+    if any(w in cmd for w in ["summarize", "summary", "read"]):
+        return "📖 Reading your request..."
+    elif any(w in cmd for w in ["find", "search", "where", "locate"]):
+        return "🔍 Searching..."
+    elif any(w in cmd for w in ["open", "launch", "start"]):
+        return "🚀 Launching..."
+    elif any(w in cmd for w in ["send", "share", "whatsapp"]):
+        return "📤 Preparing..."
+    elif any(w in cmd for w in ["screenshot", "capture", "screen"]):
+        return "📸 Capturing..."
+    elif any(w in cmd for w in ["play", "music", "spotify"]):
+        return "🎵 Loading music..."
+    elif any(w in cmd for w in ["create", "make", "write"]):
+        return "✏️ Creating..."
+    elif any(w in cmd for w in ["volume", "sound", "mute"]):
+        return "🔊 Adjusting..."
+    else:
+        return "⚡ Processing..."
+
+
 class TaskManager:
     def __init__(self):
         self.processor_task: Optional[asyncio.Task] = None
@@ -94,14 +116,15 @@ class TaskManager:
         
         log_chat_message("user", command)
         
+        initial_status = get_initial_status(command)
         if queue_msg:
             self.status_message = queue_msg
             try:
-                await self.status_message.edit_text("⚙️ Working on it...")
+                await self.status_message.edit_text(initial_status)
             except Exception as e:
                 logger.debug(f"Failed to edit queue message: {e}")
         else:
-            self.status_message = await update.message.reply_text("⏳ Working on it...")
+            self.status_message = await update.message.reply_text(initial_status)
         
         async def status_callback(status: str):
             """Update the status message in real-time."""

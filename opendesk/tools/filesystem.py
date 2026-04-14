@@ -1,7 +1,5 @@
 import os
-from typing import Optional
 from .registry import register_tool
-from opendesk.utils.file_indexer import file_indexer
 
 
 
@@ -102,35 +100,55 @@ def list_directory(directory_path: str = "", files_only: bool = False) -> str:
 @register_tool("share_file")
 def share_file(
     filename: str,
-    search_dir: Optional[str] = None
+    search_dir: str = None
 ) -> str:
-    
-    # Step 1: Check index first (instant!)
-    results = file_indexer.find_file(filename)
-    
-    if results:
-        # Filter by search_dir if provided
-        if search_dir:
-            filtered = [
-                r for r in results
-                if search_dir.lower() in 
-                r[1].lower()
-            ]
-            if filtered:
+    """
+    Finds a file on the laptop and
+    prepares it for sharing via Telegram.
+    Searches indexed database first
+    then falls back to live scan.
+    """
+    # METHOD 1: Check file index first
+    # This is instant - already indexed!
+    try:
+        from opendesk.utils.file_indexer import (
+            file_indexer
+        )
+        
+        results = file_indexer.find_file(
+            filename
+        )
+        
+        if results:
+            # Filter by search_dir if given
+            if search_dir:
+                filtered = [
+                    r for r in results
+                    if search_dir.lower() in (r[1].lower() if len(r) > 1 else r[0].lower())
+                ]
+                if filtered:
+                    found_path = filtered[0][0]
+                    return (
+                        f"File shared successfully"
+                        f" at {found_path}"
+                    )
+            else:
+                found_path = results[0][0]
                 return (
                     f"File shared successfully"
-                    f" at {filtered[0][0]}"
+                    f" at {found_path}"
                 )
-        else:
-            return (
-                f"File shared successfully"
-                f" at {results[0][0]}"
-            )
+                
+    except Exception as e:
+        import loguru
+        loguru.logger.warning(
+            f"File indexer search failed: {e}"
+            f" Falling back to live scan..."
+        )
     
-    # Step 2: Live scan as fallback
-    # (if index not built yet)
-    
-    def find_in_path(base_path: str, target_name: str):
+    # METHOD 2: Use path detector
+    # Gets real Windows paths
+    def _find_in_path(base_path: str, target_name: str):
         if not os.path.exists(base_path):
             return None
         for root, dirs, files in os.walk(base_path):
@@ -143,36 +161,201 @@ def share_file(
                     return os.path.join(root, f)
         return None
 
-    known_paths = (
-        file_indexer.get_all_known_paths()
-    )
-    
-    paths_to_scan = []
-    
-    # Prioritize search_dir if provided
-    if search_dir:
-        actual_dir = UniversalPathDetector.get_folder(search_dir.lower())
-        if actual_dir:
-            paths_to_scan.append(actual_dir)
-        elif not os.path.isabs(search_dir):
-            paths_to_scan.append(os.path.join(HOME_DIR, search_dir))
-        else:
-            paths_to_scan.append(search_dir)
-            
-    # Add all other known paths
-    for name, info in known_paths.items():
-        if info["path"] not in paths_to_scan:
-            paths_to_scan.append(info["path"])
-            
-    for path in paths_to_scan:
-        found = find_in_path(path, filename)
-        if found:
-            return (
-                f"File shared successfully"
-                f" at {found}"
+    try:
+        from opendesk.utils.path_detector import (
+            UniversalPathDetector
+        )
+        
+        all_paths = (
+            UniversalPathDetector
+            .get_all_user_folders()
+        )
+        
+        for name, path in all_paths.items():
+            if not os.path.exists(path):
+                continue
+            found = _find_in_path(
+                path, filename
             )
+            if found:
+                return (
+                    f"File shared successfully"
+                    f" at {found}"
+                )
+                
+    except Exception as e:
+        import loguru
+        loguru.logger.warning(
+            f"Path detector failed: {e}"
+        )
     
-    return f"Could not find {filename} anywhere."
+    # METHOD 3: Basic fallback
+    home = os.path.expanduser("~")
+    basic_paths = [
+        os.path.join(home, "Downloads"),
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "Pictures"),
+        "D:\\",
+        "D:\\Downloads",
+    ]
+    
+    for base in basic_paths:
+        if os.path.exists(base):
+            found = _find_in_path(
+                base, filename
+            )
+            if found:
+                return (
+                    f"File shared successfully"
+                    f" at {found}"
+                )
+    
+    return (
+        f"Could not find '{filename}'.\n"
+        f"Make sure the filename is correct.\n"
+        f"Try: share [exact filename.ext]"
+    )
+
+@register_tool("find_file_location")
+def find_file_location(
+    filename: str
+) -> str:
+    """
+    Finds where a file is located
+    on the laptop.
+    Use when user asks:
+    - where is [file]?
+    - which folder has [file]?
+    - is [file] in downloads?
+    - can you find [file]?
+    Returns the full path if found.
+    """
+    try:
+        from opendesk.utils.file_indexer import (
+            file_indexer
+        )
+        results = file_indexer.find_file(
+            filename
+        )
+        
+        if results:
+            paths_found = []
+            for r in results[:3]:
+                folder = os.path.dirname(r[0])
+                paths_found.append(
+                    f"📁 {folder}"
+                )
+            
+            response = (
+                f"✅ Found '{filename}':\n"
+            )
+            response += "\n".join(paths_found)
+            return response
+        else:
+            return (
+                f"❌ '{filename}' not found "
+                f"in indexed locations.\n"
+                f"It might be in an unusual "
+                f"folder or not yet indexed."
+            )
+    except Exception as e:
+        return f"Search error: {e}"
+
+@register_tool("read_and_summarize")
+def read_and_summarize(
+    filename: str
+) -> str:
+    """
+    Finds a file, reads its content
+    and returns it for AI to summarize.
+    Use when user says:
+    - summarize [file]
+    - what is in [file]?
+    - read [file] for me
+    - explain [file]
+    """
+    try:
+        from opendesk.utils.file_indexer import (
+            file_indexer
+        )
+        
+        # Check if it's already a valid path
+        import os
+        if os.path.exists(filename):
+            file_path = filename
+        else:
+            # Find file using indexer
+            results = file_indexer.find_file(
+                filename
+            )
+            
+            if not results:
+                # One last try to just search by the base name if it was a weird path
+                base = os.path.basename(filename)
+                results = file_indexer.find_file(base)
+                if not results:
+                    return f"Could not find '{filename}'"
+            
+            file_path = results[0][0]
+        
+        ext = os.path.splitext(
+            file_path
+        )[1].lower()
+        
+        content = ""
+        
+        # Read based on file type
+        if ext == ".pdf":
+            try:
+                import PyPDF2
+                with open(
+                    file_path, "rb"
+                ) as f:
+                    reader = PyPDF2.PdfReader(f)
+                    for page in reader.pages[:5]:
+                        content += (
+                            page.extract_text()
+                        )
+            except:
+                content = "Could not read PDF"
+                
+        elif ext in [".txt", ".py", ".md", ".csv"]:
+            with open(
+                file_path, "r",
+                encoding="utf-8",
+                errors="ignore"
+            ) as f:
+                content = f.read()[:3000]
+                
+        elif ext == ".docx":
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                content = "\n".join([
+                    p.text
+                    for p in doc.paragraphs
+                ])[:3000]
+            except:
+                content = "Could not read docx"
+        else:
+            return (
+                f"File found at {file_path}\n"
+                f"Cannot read {ext} files yet."
+            )
+        
+        if content:
+            return (
+                f"File: {filename}\n"
+                f"Location: {file_path}\n\n"
+                f"Content:\n{content[:2000]}"
+            )
+        else:
+            return f"File is empty: {file_path}"
+            
+    except Exception as e:
+        return f"Read error: {e}"
+
 
 @register_tool("open_path")
 def open_path(path: str) -> str:
@@ -189,3 +372,61 @@ def open_path(path: str) -> str:
         return f"Successfully opened '{abs_path}' using the system default handler."
     except Exception as e:
         return f"Error opening path '{path}': {e}"
+
+@register_tool("find_latest_file")
+def find_latest_file(
+    file_type: str = "pdf",
+    folder: str = "downloads"
+) -> str:
+    """
+    Finds the most recently modified file of a specific type in a folder.
+    Use when user says 'latest pdf in downloads', 'most recent file', etc.
+    file_type: pdf, docx, jpg, png, txt
+    folder: downloads, desktop, documents, pictures
+    """
+    import sqlite3
+    from opendesk.utils.file_indexer import file_indexer
+
+    folder_patterns = {
+        "downloads": "%download%",
+        "desktop": "%desktop%",
+        "documents": "%document%",
+        "pictures": "%picture%",
+        "onedrive": "%onedrive%",
+    }
+    
+    pattern = folder_patterns.get(folder.lower(), f"%{folder.lower()}%")
+    ext = f".{file_type.lower()}" if not file_type.startswith('.') else file_type.lower()
+    
+    try:
+        conn = sqlite3.connect(file_indexer.db_path)
+        # Using the file_index SQLite table directly
+        results = conn.execute("""
+            SELECT filename, filepath, last_modified, size_kb 
+            FROM file_index 
+            WHERE LOWER(filepath) LIKE ? 
+            AND LOWER(extension) = ? 
+            ORDER BY last_modified DESC 
+            LIMIT 1
+        """, (pattern, ext)).fetchall()
+        conn.close()
+        
+        if results:
+            filename = results[0][0]
+            filepath = results[0][1]
+            modified = results[0][2]
+            size = results[0][3]
+            
+            return (
+                f"Latest {file_type.upper()} found:\n"
+                f"Name: {filename}\n"
+                f"Path: {filepath}\n"
+                f"Modified: {modified}\n"
+                f"Size: {size:.1f} KB"
+            )
+        
+        return f"No recently modified {file_type.upper()} files tracked in {folder}."
+            
+    except Exception as e:
+        return f"Search error in SQLite file index: {str(e)}"
+

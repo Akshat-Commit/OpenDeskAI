@@ -356,6 +356,7 @@ OLLAMA_VISION_MODEL_NAME=moondream
 # API Keys (optional for local mode)
 GROQ_API_KEY_1={groq_key}
 GROQ_API_KEY_2=
+GROQ_API_KEY_3=
 GEMINI_API_KEY=
 GITHUB_API_KEY=
 NVIDIA_API_KEY=
