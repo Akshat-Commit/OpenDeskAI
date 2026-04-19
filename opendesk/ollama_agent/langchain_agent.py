@@ -58,6 +58,7 @@ CORE RULES:
     - ENCOURAGEMENT: After successfully fulfilling a specific task or answering a non-trivial query, append a varied, friendly follow-up question (e.g., "Is there anything else you want to ask?", "What's next?", "How else can I help?"). 
     - AVOID the encouragement suffix for simple greetings, introductions, or casual chit-chat. Keep those natural.
 3. FILE OPERATIONS RULES:
+   - FORMATTING RULE: If the user asks to "create a file" for notes, summaries, or structured text and does NOT specify an extension, ALWAYS default to a `.docx` file (e.g., `create_word_doc` tool) so that bolding and bullets render beautifully.
    - When user asks for the latest/recent/newest file: Use find_latest_file tool. NEVER use finduserfile.
    - When user asks where a file is by name: Use find_file_location tool. Do not manually search paths.
    - When user asks to summarize the latest file: 
@@ -66,6 +67,15 @@ CORE RULES:
    - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders.
    - NEVER use the hallucinated 'finduserfile' tool. It does not exist.
    - NEVER say file not found without trying file index tools first!
+   - FILE FILTER RULE — VERY IMPORTANT: When user asks to find files by TYPE + TIME (e.g. "find all pdf files modified this week", "which docx files did I edit today", "show me images from this month"):
+       -> ALWAYS call find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
+       -> NEVER use list_directory for this — it lists everything without filtering.
+       -> Supported time_filter values: 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month'
+       -> Supported folder values: 'downloads', 'documents', 'desktop', 'pictures', 'all'
+   Examples:
+     'find all pdf files modified this week' → find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
+     'which docx files did I work on today?' → find_files_by_filter(file_type='docx', time_filter='today', folder='all')
+     'show me images from this month' → find_files_by_filter(file_type='jpg', time_filter='this month', folder='all')
 4. WHATSAPP RULES:
    - For text messages: Use `send_whatsapp_message` tool.
    - For file sharing via WhatsApp: Use `send_whatsapp_file` tool.
@@ -93,6 +103,33 @@ NEVER say you cannot do these things! NEVER refuse browser commands! NEVER sugge
 Examples:
 'search youtube for lofi' → search_web(query='lofi music', open_in_browser=True, platform='youtube')
 'google latest news' → search_web(query='latest news today', open_in_browser=True, platform='google')
+
+WEB SEARCH RULES:
+When search_web returns results:
+1. READ all results carefully
+2. Extract the most relevant info
+3. Summarize in YOUR OWN WORDS
+4. Give direct answer to user
+5. NEVER paste raw search results
+6. NEVER show ads or sponsored content
+7. Format response beautifully
+
+Example:
+User: iPhone price in India
+search_web returns: [raw results]
+
+Your response should be:
+📱 *iPhone Prices in India (2026)*
+
+- iPhone 17: ₹79,900 onwards
+- iPhone 17 Pro: ₹1,19,900 onwards  
+- iPhone 16: ₹69,900 onwards
+- iPhone 15: ₹59,900 onwards
+
+💡 Best deals available on:
+Flipkart, Amazon, Apple Store India
+
+NOT the raw search results!
 
 DOCUMENT SUMMARIZATION RULES:
 
@@ -663,7 +700,7 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                                 func = _TOOLS.get(h_name)
                                 if func:
                                     try:
-                                        obs = func(**h_args)
+                                        obs = await asyncio.to_thread(func, **h_args)
                                         logger.info(f"INLINE FALLBACK SUCCESS: {h_name} returned: {obs}")
                                         tool_logs.append({"name": h_name, "args": h_args, "output": str(obs)})
                                         # Handle attachments ...
@@ -721,7 +758,7 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
                 
-                from opendesk.utils.status_messages import get_status, get_completion
+                from opendesk.utils.status_messages import get_status
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
                 func = _TOOLS.get(tool_name)

@@ -1,4 +1,5 @@
 import os
+from loguru import logger
 from .registry import register_tool
 
 
@@ -12,9 +13,11 @@ DESKTOP_PATH = UniversalPathDetector.get_folder("desktop") or os.path.join(HOME_
 
 def _is_safe_path(filepath: str) -> bool:
     """Check if the given path is within the user's home directory."""
-    # Convert 'desktop' or 'Desktop' to the actual discovered path
-    if filepath.lower() == "desktop":
-        abs_path = DESKTOP_PATH
+    lower_path = filepath.lower().strip()
+    if lower_path in ["desktop", "downloads", "documents", "pictures", "music", "videos"]:
+        abs_path = UniversalPathDetector.get_folder(lower_path)
+        if not abs_path:
+            abs_path = os.path.join(HOME_DIR, lower_path.capitalize())
     else:
         abs_path = os.path.abspath(os.path.expanduser(filepath))
     return abs_path.startswith(HOME_DIR)
@@ -25,7 +28,12 @@ def read_file(filepath: str) -> str:
     if not _is_safe_path(filepath):
         return f"Access denied: '{filepath}' is outside your home directory ({HOME_DIR})."
     try:
-        abs_path = os.path.abspath(os.path.expanduser(filepath))
+        lower_path = filepath.lower().strip()
+        if lower_path in ["desktop", "downloads", "documents", "pictures", "music", "videos"]:
+            abs_path = UniversalPathDetector.get_folder(lower_path) or os.path.join(HOME_DIR, lower_path.capitalize())
+        else:
+            abs_path = os.path.abspath(os.path.expanduser(filepath))
+            
         with open(abs_path, "r", encoding="utf-8") as f:
             content = f.read()
         # Truncate if very large
@@ -41,21 +49,38 @@ def write_file(filepath: str, content: str) -> str:
     if not _is_safe_path(filepath):
         return f"Access denied: '{filepath}' is outside your home directory ({HOME_DIR})."
     try:
+        import re
         abs_path = os.path.abspath(os.path.expanduser(filepath))
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        
+        # Clean markdown if forced to right to .txt
+        if abs_path.lower().endswith(".txt"):
+            content = re.sub(r'\*\*(.*?)\*\*', r'\1', content) # bold
+            content = re.sub(r'__(.*?)__', r'\1', content) # bold
+            content = re.sub(r'\*(.*?)\*', r'\1', content) # italic
+            content = re.sub(r'_(.*?)_', r'\1', content) # italic
+            content = re.sub(r'^#+\s*(.*?)$', r'\n\1\n' + '-'*20, content, flags=re.MULTILINE) # headings
+            content = content.replace('```', '')
+            
         with open(abs_path, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write(content.strip())
         return f"File saved successfully at {abs_path}"
     except Exception as e:
         return f"Error writing to file '{filepath}': {e}"
 
 @register_tool("list_directory")
 def list_directory(directory_path: str = "", files_only: bool = False) -> str:
-    """Lists files and folders in a directory with file sizes. Defaults to user's home directory. Use 'desktop' to see desktop files. Set files_only=True to hide subdirectories."""
+    """Lists files and folders in a directory with file sizes. Defaults to user's home directory. Use 'desktop', 'downloads', 'documents', etc. to see fast folders. Set files_only=True to hide subdirectories."""
     if not directory_path:
         directory_path = HOME_DIR
-    elif directory_path.lower() == "desktop":
-        directory_path = DESKTOP_PATH
+    else:
+        lower_path = directory_path.lower().strip()
+        if lower_path in ["desktop", "downloads", "documents", "pictures", "music", "videos"]:
+            detected = UniversalPathDetector.get_folder(lower_path)
+            if detected:
+                directory_path = detected
+            else:
+                directory_path = os.path.join(HOME_DIR, lower_path.capitalize())
     
     if not _is_safe_path(directory_path):
         return f"Access denied: '{directory_path}' is outside your home directory ({HOME_DIR})."
@@ -429,4 +454,174 @@ def find_latest_file(
             
     except Exception as e:
         return f"Search error in SQLite file index: {str(e)}"
+
+
+@register_tool("find_files_by_filter")
+def find_files_by_filter(
+    file_type: str = "pdf",
+    time_filter: str = "this week",
+    folder: str = "all"
+) -> str:
+    """
+    Finds files of a specific type that were modified within a given time period.
+    Use this when user asks things like:
+    - 'find all pdf files modified this week'
+    - 'which docx files did I work on today?'
+    - 'show me images from this month'
+    - 'list all pdfs changed recently'
+
+    Parameters:
+        file_type  : File extension to search for. E.g. 'pdf', 'docx', 'jpg', 'png', 'txt', 'xlsx'.
+        time_filter: One of 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month'.
+        folder     : Where to look. E.g. 'downloads', 'documents', 'desktop', 'all' (searches everywhere).
+    """
+    import datetime
+    import sqlite3
+    from opendesk.utils.file_indexer import file_indexer
+
+    # ── Resolve time boundaries ──────────────────────────────────────────────
+    now = datetime.datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    tf = time_filter.lower().strip()
+    if tf == "today":
+        cutoff = today_start
+    elif tf == "yesterday":
+        cutoff = today_start - datetime.timedelta(days=1)
+        now = today_start  # upper bound = start of today
+    elif tf in ("this week", "week"):
+        # Monday of the current week
+        cutoff = today_start - datetime.timedelta(days=today_start.weekday())
+    elif tf in ("last week",):
+        this_monday = today_start - datetime.timedelta(days=today_start.weekday())
+        cutoff = this_monday - datetime.timedelta(weeks=1)
+        now = this_monday
+    elif tf in ("this month", "month"):
+        cutoff = today_start.replace(day=1)
+    elif tf in ("last month",):
+        first_of_this_month = today_start.replace(day=1)
+        cutoff = (first_of_this_month - datetime.timedelta(days=1)).replace(day=1)
+        now = first_of_this_month
+    else:
+        # Try to parse as N days, e.g. "3 days"
+        import re as _re
+        m = _re.match(r"(\d+)\s*day", tf)
+        if m:
+            cutoff = today_start - datetime.timedelta(days=int(m.group(1)))
+        else:
+            cutoff = today_start - datetime.timedelta(days=7)  # default: one week
+
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Resolve folder pattern ────────────────────────────────────────────────
+    folder_patterns = {
+        "downloads": "%download%",
+        "desktop":   "%desktop%",
+        "documents": "%document%",
+        "pictures":  "%picture%",
+        "music":     "%music%",
+        "videos":    "%video%",
+        "onedrive":  "%onedrive%",
+        "all":       "%",
+    }
+    folder_pattern = folder_patterns.get(folder.lower(), f"%{folder.lower()}%")
+
+    ext = f".{file_type.lower()}" if not file_type.startswith('.') else file_type.lower()
+
+    # ── Live filesystem scan as primary method ────────────────────────────────
+    HOME = os.path.expanduser("~")
+
+    # Determine which base directories to scan
+    if folder.lower() == "all":
+        try:
+            scan_roots = list(UniversalPathDetector.get_all_user_folders().values())
+        except Exception:
+            scan_roots = [
+                os.path.join(HOME, "Downloads"),
+                os.path.join(HOME, "Desktop"),
+                os.path.join(HOME, "Documents"),
+                os.path.join(HOME, "Pictures"),
+                os.path.join(HOME, "Music"),
+                os.path.join(HOME, "Videos"),
+                HOME,
+            ]
+    else:
+        detected = UniversalPathDetector.get_folder(folder.lower())
+        scan_roots = [detected] if detected else [os.path.join(HOME, folder.capitalize())]
+
+    matches = []
+    cutoff_ts = cutoff.timestamp()
+    now_ts = now.timestamp()
+
+    for root_dir in scan_roots:
+        if not os.path.isdir(root_dir):
+            continue
+        try:
+            for dirpath, _dirs, files in os.walk(root_dir):
+                # Limit depth to 4 levels to stay fast
+                depth = dirpath[len(root_dir):].count(os.sep)
+                if depth > 4:
+                    _dirs[:] = []
+                    continue
+                for fname in files:
+                    if not fname.lower().endswith(ext):
+                        continue
+                    full = os.path.join(dirpath, fname)
+                    try:
+                        mtime = os.path.getmtime(full)
+                    except OSError:
+                        continue
+                    if cutoff_ts <= mtime <= now_ts:
+                        size_bytes = os.path.getsize(full)
+                        if size_bytes < 1024:
+                            size_str = f"{size_bytes} B"
+                        elif size_bytes < 1024 * 1024:
+                            size_str = f"{size_bytes / 1024:.1f} KB"
+                        else:
+                            size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+                        mod_dt = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                        matches.append((mod_dt, fname, size_str, full))
+        except PermissionError:
+            continue
+
+    # ── Fallback: SQLite index ────────────────────────────────────────────────
+    if not matches:
+        try:
+            conn = sqlite3.connect(file_indexer.db_path)
+            rows = conn.execute("""
+                SELECT filename, filepath, last_modified, size_kb
+                FROM file_index
+                WHERE LOWER(extension) = ?
+                  AND LOWER(filepath) LIKE ?
+                  AND last_modified >= ?
+                  AND last_modified <= ?
+                ORDER BY last_modified DESC
+                LIMIT 50
+            """, (ext, folder_pattern, cutoff_str, now_str)).fetchall()
+            conn.close()
+            for fname, fpath, mod, size_kb in rows:
+                size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+                matches.append((mod, fname, size_str, fpath))
+        except Exception as db_err:
+            logger.debug(f"SQLite index fallback failed in find_files_by_filter: {db_err}")
+
+    if not matches:
+        return (
+            f"No {file_type.upper()} files found that were modified '{time_filter}' "
+            f"in '{folder}'.\n"
+            f"(Searched from {cutoff_str} to {now_str})"
+        )
+
+    # Sort by modification time descending
+    matches.sort(key=lambda x: x[0], reverse=True)
+
+    lines = [
+        f"[{file_type.upper()}] files modified '{time_filter}' "
+        f"({len(matches)} found):\n"
+    ]
+    for mod_dt, fname, size_str, fpath in matches:
+        lines.append(f"  - {fname}  ({size_str})  [modified {mod_dt}]")
+
+    return "\n".join(lines)
 

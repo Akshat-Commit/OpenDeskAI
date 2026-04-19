@@ -48,6 +48,7 @@ class JudgeAgent:
         - "Play on YouTube", "search YouTube", "open YouTube" = SUCCESS means search_web tool was called with open_in_browser=True and platform='youtube'. The browser will open the YouTube search page. This IS task completion. Do NOT require app_launcher for YouTube tasks.
         - File sharing SUCCESS (Telegram) means: share_file tool was called.
         - WhatsApp SUCCESS means: send_whatsapp_file or send_whatsapp_message tool was called.
+        - "Find files by type + time" (e.g. 'find all pdf files modified this week', 'show docx files from today') = SUCCESS means find_files_by_filter tool was called and returned a list. Do NOT require list_directory for this type of query.
         
         Before the agent executes this, define STRICT, specific criteria for success.
         What tools MUST be used? What exact outcome is expected?
@@ -98,6 +99,8 @@ class JudgeAgent:
         - "Summarise"/"read" a document = read_document tool must return content.
         - "Open" an app or website = app_launcher, search_web, or read_webpage must be called.
         - File sharing is COMPLETE if share_file OR send_whatsapp_file was called and returned success.
+        - "Find files by type + time period" (e.g. 'find pdfs modified this week', 'docx files from today') = SUCCESS means find_files_by_filter tool was called and returned results. list_directory is NOT acceptable for this query type.
+
 
         EVALUATION RULES:
         - Be lenient with formatting differences
