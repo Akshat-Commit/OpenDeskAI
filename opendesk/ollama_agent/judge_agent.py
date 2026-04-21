@@ -1,9 +1,12 @@
 import json
+import hashlib
 from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from opendesk.config import GEMINI_API_KEY, GITHUB_API_KEY
 
-
+# In-process criteria cache: avoids re-calling Gemini for the same command on retry.
+# Key: MD5 of the lowercased command. Value: criteria string.
+_criteria_cache: dict = {}
 
 class JudgeAgent:
     def __init__(self):
@@ -32,49 +35,123 @@ class JudgeAgent:
 
     async def prepare_evaluation_criteria(self, command: str) -> str:
         """
-        SPEED OPTIMIZATION: Runs in parallel with the Executor.
         Pre-generates a strict grading rubric based on the user's command.
+        Result is cached in-process by command hash so retries are free.
         """
+        cache_key = hashlib.md5(command.strip().lower().encode(), usedforsecurity=False).hexdigest()
+        if cache_key in _criteria_cache:
+            logger.info("JUDGE CACHE HIT: Reusing criteria (no LLM call needed).")
+            return _criteria_cache[cache_key]
+
         prompt = f"""
         You are the JUDGE for an AI Assistant called OpenDesk that controls a Windows PC.
         The user has given the following command: "{command}"
         
-        IMPORTANT CONTEXT — OpenDesk capabilities:
-        - "Share", "send", or "give me" a file = the agent sends it as a Telegram attachment using the share_file tool. It does NOT use email or cloud storage.
-        - "WhatsApp" tasks = if user asks to send via WhatsApp, the agent MUST use send_whatsapp_file or send_whatsapp_message.
-        - "Find" a file = the agent uses find_user_file tool to search the local PC.
-        - "Summarise" or "read" a file = the agent uses read_document tool to extract text.
-        - "Open" an app or website = the agent uses app_launcher, search_web, or read_webpage tools.
-        - "Play on YouTube", "search YouTube", "open YouTube" = SUCCESS means search_web tool was called with open_in_browser=True and platform='youtube'. The browser will open the YouTube search page. This IS task completion. Do NOT require app_launcher for YouTube tasks.
-        - File sharing SUCCESS (Telegram) means: share_file tool was called.
-        - WhatsApp SUCCESS means: send_whatsapp_file or send_whatsapp_message tool was called.
-        - "Find files by type + time" (e.g. 'find all pdf files modified this week', 'show docx files from today') = SUCCESS means find_files_by_filter tool was called and returned a list. Do NOT require list_directory for this type of query.
+        IMPORTANT CONTEXT — OpenDesk tool names (use EXACTLY these names):
+        - "Share", "send", or "give me" a file = share_file tool. Do NOT expect email or cloud uploads.
+        - "WhatsApp" tasks = send_whatsapp_file (for files) or send_whatsapp_message (for text).
+        - "Find the most recent/latest file" = find_latest_file tool (NOT find_user_file — that tool does NOT exist).
+        - "Find a file by name" = find_file_location tool (NOT find_user_file — that tool does NOT exist).
+        - "Find files by type + time" = find_files_by_filter tool.
+        - "Summarise" or "read" a file = read_and_summarize tool (NOT read_document — that tool does NOT exist).
+        - "Open" a file or app = open_path or open_application tool.
+        - "Take a screenshot" = take_screenshot tool.
+        - "Open browser/YouTube/Google" = search_web tool with open_in_browser=True.
+        
+        MULTI-STEP TASK LOGIC:
+        - If the command is "find the most recent file, open it, take a screenshot, share it":
+          SUCCESS = find_latest_file was called AND take_screenshot was called AND share_file was called.
+          You do NOT need read_and_summarize — the user asked to open and screenshot, not summarize.
+        - Judge the task by what the user ACTUALLY asked for, not by a fixed list of tools.
         
         Before the agent executes this, define STRICT, specific criteria for success.
         What tools MUST be used? What exact outcome is expected?
         Keep it concise (2-3 sentences max).
         """
+        criteria = None
         try:
             if not self.llm:
                 raise ValueError("Primary LLM (Gemini) not configured")
             response = await self.llm.ainvoke(prompt)
-            return response.content.strip()
+            criteria = response.content.strip()
         except Exception as e:
             logger.debug(f'Primary gen failed: {e}')
             if self.fallback_llm:
                 try:
                     res = await self.fallback_llm.ainvoke(prompt)
-                    return res.content.strip()
+                    criteria = res.content.strip()
                 except Exception as fallback_e:
                     logger.debug(f'Fallback gen failed: {fallback_e}')
-            return "Standard strict criteria: The agent must use appropriate tools and complete the user's request without hallucinating."
+
+        if not criteria:
+            criteria = "Standard strict criteria: The agent must use appropriate tools and complete the user's request without hallucinating."
+
+        _criteria_cache[cache_key] = criteria
+        return criteria
+
+    def _rule_based_fast_approve(self, command: str, tool_logs: list) -> dict | None:
+        """
+        Rule-based fast-approve: if tool_logs clearly show success, skip LLM judge entirely.
+        Returns a verdict dict on confident approval, or None to fall through to LLM judge.
+        Saves Gemini/GitHub quota on straightforward completions.
+        """
+        if not tool_logs:
+            return None
+
+        msg = command.lower()
+        executed = {log["name"] for log in tool_logs}
+        outputs = " ".join(str(log.get("output", "")) for log in tool_logs).lower()
+
+        # Require at least one tool ran without error
+        any_error = any(str(log.get("output", "")).strip().lower().startswith("error") for log in tool_logs)
+        success_signal = "successfully" in outputs or "success" in outputs or "saved at" in outputs or "shared successfully" in outputs
+
+        if any_error or not success_signal:
+            return None  # Can't fast-approve if there are errors or no success markers
+
+        # Rule 1: file-share tasks — share_file was called and succeeded
+        if any(kw in msg for kw in ["share", "send me", "give me"]) and "whatsapp" not in msg:
+            if "share_file" in executed and "shared successfully" in outputs:
+                logger.info("JUDGE FAST-APPROVE: share_file succeeded — skipping LLM judge.")
+                return {"hallucinated": False, "tool_called": True, "task_completed": True,
+                        "correction": "", "confidence": 9}
+
+        # Rule 2: WhatsApp send — send_whatsapp_* was called and succeeded
+        if "whatsapp" in msg:
+            if ("send_whatsapp_file" in executed or "send_whatsapp_message" in executed) and success_signal:
+                logger.info("JUDGE FAST-APPROVE: WhatsApp send succeeded — skipping LLM judge.")
+                return {"hallucinated": False, "tool_called": True, "task_completed": True,
+                        "correction": "", "confidence": 9}
+
+        # Rule 3: screenshot + share — both take_screenshot and share_file succeeded
+        if "screenshot" in msg or ("open" in msg and "share" in msg):
+            if "take_screenshot" in executed and "share_file" in executed and "shared successfully" in outputs:
+                logger.info("JUDGE FAST-APPROVE: screenshot + share succeeded — skipping LLM judge.")
+                return {"hallucinated": False, "tool_called": True, "task_completed": True,
+                        "correction": "", "confidence": 9}
+
+        # Rule 4: simple system info / volume / battery — single tool, no error
+        simple_tools = {"get_current_volume", "get_battery_level", "get_current_time",
+                        "set_volume", "mute_volume", "unmute_volume", "get_system_info"}
+        if executed & simple_tools and not any_error:
+            logger.info("JUDGE FAST-APPROVE: Simple system tool succeeded — skipping LLM judge.")
+            return {"hallucinated": False, "tool_called": True, "task_completed": True,
+                    "correction": "", "confidence": 8}
+
+        return None  # No fast-approve rule matched — use LLM judge
+
 
     async def evaluate_response(self, command: str, result: str, tool_logs: list, criteria: str = "", image_b64: str = None):
         """
         Evaluate if the Executor Agent successfully completed the task.
-        Uses visual verification if an image_b64 is provided.
-        Returns a structured dictionary score.
+        Tries rule-based fast-approve first (zero LLM cost).
+        Falls back to Gemini, then GitHub GPT-4o-mini if needed.
         """
+        # ── FAST-APPROVE: rule-based check (no LLM cost) ──
+        fast_verdict = self._rule_based_fast_approve(command, tool_logs)
+        if fast_verdict is not None:
+            return fast_verdict
+
         content_list = [
             {"type": "text", "text": f"""
         You are the JUDGE for an AI Assistant that controls a Windows laptop.
@@ -92,21 +169,27 @@ class JudgeAgent:
         3. "task_completed": true if the final result satisfies the PRE-COMPUTED STRICT CRITERIA.
         4. "correction": If failure, explain EXACTLY what happened.
         
-        CRITICAL OPENDESK CONTEXT — how this agent works:
-        - "Share", "send", or "give me" a file (Normal) = SUCCESS means share_file tool was called and sent via Telegram. Do NOT expect email, Google Drive, OneDrive or any cloud upload.
-        - "WhatsApp" commands = SUCCESS means send_whatsapp_file or send_whatsapp_message was called and returned a success message. Do NOT expect Telegram file sending for WhatsApp tasks!
-        - "Find" a file = find_user_file tool must be called.
-        - "Summarise"/"read" a document = read_document tool must return content.
-        - "Open" an app or website = app_launcher, search_web, or read_webpage must be called.
-        - File sharing is COMPLETE if share_file OR send_whatsapp_file was called and returned success.
-        - "Find files by type + time period" (e.g. 'find pdfs modified this week', 'docx files from today') = SUCCESS means find_files_by_filter tool was called and returned results. list_directory is NOT acceptable for this query type.
+        CRITICAL OPENDESK CONTEXT — exact tool names this agent uses:
+        - "Share", "send", or "give me" a file = SUCCESS means share_file tool was called. Do NOT expect email, Google Drive, OneDrive or any cloud upload.
+        - "WhatsApp" commands = SUCCESS means send_whatsapp_file or send_whatsapp_message was called. Do NOT expect share_file for WhatsApp tasks!
+        - "Find the most recent/latest file" = find_latest_file tool must be called (NOT find_user_file — that does NOT exist).
+        - "Find a file by name" = find_file_location tool must be called (NOT find_user_file — that does NOT exist).
+        - "Find files by type + time period" = find_files_by_filter tool must be called. list_directory is NOT acceptable.
+        - "Summarise"/"read" a document = read_and_summarize tool must return content (NOT read_document — that does NOT exist).
+        - "Open" an app, file or folder = open_path or open_application must be called.
+        - "Take a screenshot" = take_screenshot tool must be called.
+        - File sharing COMPLETE if share_file was called and returned success message.
+        
+        MULTI-STEP TASK SUCCESS RULE:
+        - For commands like "find most recent file, open it, take screenshot, share it":
+          SUCCESS = find_latest_file called + take_screenshot called + share_file called.
+          Do NOT require read_and_summarize — the user did NOT ask for a summary.
+        - Evaluate tasks strictly on what the user ASKED for, not on assumptions about extra tools.
 
 
         EVALUATION RULES:
         - Be lenient with formatting differences
-        - 2+2 and 2 + 2 are equivalent
         - Focus on RESULT not exact format
-        - If calculator shows correct answer task is COMPLETE regardless of how input was typed
         - Never fail task for minor formatting
         
         IF AN IMAGE IS PROVIDED: This is a screenshot of the computer AFTER the agent finished. 

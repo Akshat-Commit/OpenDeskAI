@@ -52,6 +52,17 @@ CORE RULES:
 1. TOOL CALLING: You have native tools. Call them directly using your internal tool-use capability. 
    - NEVER output tags like <function=...> or XML-style calls. 
    - NEVER explain your tool usage. Just call the tool.
+   - MULTI-STEP TASKS: If a command requires multiple actions (e.g. "read PDF and create a Word doc"), you MUST complete ALL steps in sequence. Do NOT stop after the first tool. Keep calling tools until every step is done.
+     Example 1: "Read document.pdf, summarise in 5 points, save as summary.docx"
+       -> Step 1: read_and_summarize(filename='document.pdf')
+       -> Step 2: create_word_doc(content='...5 point summary...', filepath='summary.docx')
+       -> ONLY respond to the user AFTER both tools are done.
+     Example 2: "Check downloads, find most recent file, open it, take screenshot"
+       -> Step 1: find_latest_file(file_type='all', folder='downloads')
+          [The result contains a line starting with EXACT_PATH -- use that value as-is in the next step]
+       -> Step 2: open_path(path='<paste the EXACT_PATH value here, do NOT use a placeholder>')
+       -> Step 3: take_screenshot()
+       -> CRITICAL: NEVER pass placeholder strings like 'path_to_file'. ALWAYS use the real path returned.
 2. PERSONA: Be professional, friendly, and helpful. 
     - If it's a completely new conversation, you may greet warmly. Otherwise, just converse naturally without saying "Hey! OpenDesk here!" every time.
     - Do NOT mention system stats (CPU/RAM) unless specifically asked.
@@ -67,15 +78,31 @@ CORE RULES:
    - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders.
    - NEVER use the hallucinated 'finduserfile' tool. It does not exist.
    - NEVER say file not found without trying file index tools first!
+   - SCREENSHOT SHARING RULE — HIGHEST PRIORITY: If you have JUST called take_screenshot in this execution (i.e. take_screenshot appears in your tool calls above), its result message contains the EXACT saved filename, e.g.:
+       "File saved successfully at C:\...\screenshot_20260422_000532.png"
+     → You MUST use that EXACT filename when calling share_file next.
+     → NEVER use a filename from conversation history when you just took a fresh screenshot.
+     → The filename from memory history is STALE — the fresh screenshot overwrites it.
+     Example: take_screenshot returns "saved at .../screenshot_20260422_000532.png"
+       → share_file(filename='screenshot_20260422_000532.png')   ← CORRECT
+       → share_file(filename='screenshot_20260420_010230.png')   ← WRONG — stale from history
+   - SCREENSHOT RENDER RULE: When you call take_screenshot immediately after open_path or open_application,
+     the app may not have fully loaded yet. ALWAYS pass wait_seconds=3 in this case so the window has time to render:
+       → open_path(path='...') → take_screenshot(wait_seconds=3)   ← CORRECT for docs/PDFs/Office files
+       → take_screenshot()                                          ← ONLY for manual screenshots with no prior open
+   - CONVERSATION MEMORY RULE: The conversation history may contain lines like:
+       [FILES CREATED THIS TURN]: screenshot_20260420_010230.png (path: C:\...\screenshot_20260420_010230.png)
+     This rule ONLY applies when the user asks to RE-SEND a file WITHOUT having just taken a new screenshot.
+     If you just called take_screenshot → ignore this memory rule, use the fresh filename instead.
    - FILE FILTER RULE — VERY IMPORTANT: When user asks to find files by TYPE + TIME (e.g. "find all pdf files modified this week", "which docx files did I edit today", "show me images from this month"):
        -> ALWAYS call find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
        -> NEVER use list_directory for this — it lists everything without filtering.
        -> Supported time_filter values: 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month'
        -> Supported folder values: 'downloads', 'documents', 'desktop', 'pictures', 'all'
-   Examples:
-     'find all pdf files modified this week' → find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
-     'which docx files did I work on today?' → find_files_by_filter(file_type='docx', time_filter='today', folder='all')
-     'show me images from this month' → find_files_by_filter(file_type='jpg', time_filter='this month', folder='all')
+   - File filter example: 'find all pdf files modified this week' -> find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
+   - EXACT PATH RULE: When find_file_location or find_latest_file returns a line saying EXACT_PATH: <path>, you MUST use that exact string as the argument for open_path or read_and_summarize. NEVER substitute a placeholder.
+   - OPEN FOLDER RULE: open_path accepts folder aliases like 'downloads', 'desktop', 'documents' as well as full paths.
+   - list_directory only shows the first 25 items. It is NOT suitable for finding a specific file — use find_file_location, find_latest_file, or find_files_by_filter for that.
 4. WHATSAPP RULES:
    - For text messages: Use `send_whatsapp_message` tool.
    - For file sharing via WhatsApp: Use `send_whatsapp_file` tool.
@@ -232,16 +259,13 @@ def build_fallback_chain() -> list:
 
     if mode == "developer":
         if getattr(cfg, "OPENDESK_ENV", "production") == "testing":
-            # ── TESTING MODE (No Gemini per User Request) ──
-            # 1. Groq Key 1 - llama-3.3-70b-versatile
-            chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-            
-            # 2. Groq Key 2 - llama-3.3-70b-versatile
-            chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
-            
-            # 3. Groq Key 3 - llama-3.3-70b-versatile
+            # ── TESTING MODE ──
+            # Llama 4 Scout: native Tool Use + Vision + 128K context on Groq
+            # GPT-4o-mini is the proven reliable fallback if Scout has any issue
+            chain.append({"name": "Groq Llama 4 Scout (Key 1)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            chain.append({"name": "Groq Llama 4 Scout (Key 2)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
             if GROQ_API_KEY_3:
-                chain.append({"name": "Groq Llama 70B (Key 3)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+                chain.append({"name": "Groq Llama 4 Scout (Key 3)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
 
             # 4. GitHub - gpt-4o-mini
             if GITHUB_API_KEY:
@@ -257,16 +281,13 @@ def build_fallback_chain() -> list:
                 llm_gemma = ChatOllama(model="gemma3:12b", base_url=OLLAMA_HOST, temperature=0.0)
                 chain.append({"name": "Local Gemma Fallback", "llm": llm_gemma})
         else:
-            # ── PRODUCTION MODE (No Gemini per User Request) ──
-            # 1. Groq Key 1 - llama-3.3-70b-versatile
-            chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-            
-            # 2. Groq Key 2 - llama-3.3-70b-versatile
-            chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
-
-            # 3. Groq Key 3 - llama-3.3-70b-versatile
+            # ── PRODUCTION MODE ──
+            # Llama 4 Scout: native Tool Use + Vision + 128K context on Groq
+            # GPT-4o-mini is the proven reliable fallback if Scout has any issue
+            chain.append({"name": "Groq Llama 4 Scout (Key 1)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            chain.append({"name": "Groq Llama 4 Scout (Key 2)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
             if GROQ_API_KEY_3:
-                chain.append({"name": "Groq Llama 70B (Key 3)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+                chain.append({"name": "Groq Llama 4 Scout (Key 3)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
 
             # 4. GitHub - gpt-4o-mini
             if GITHUB_API_KEY:
@@ -291,8 +312,8 @@ def build_fallback_chain() -> list:
         logger.info(f"Local mode: Using Ollama {OLLAMA_MODEL_NAME}")
 
     elif mode == "cloud":
-        # ── Cloud: Groq + optional Ollama fallback ──
-        chain.append({"name": "Groq Llama 70B", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+        # ── Cloud: Llama 4 Scout (native tool use) + optional Ollama fallback ──
+        chain.append({"name": "Groq Llama 4 Scout", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
         # Silent Ollama fallback if installed
         if _check_ollama_available():
             llm_local_backup = ChatOllama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_HOST, temperature=0.0)
@@ -302,6 +323,51 @@ def build_fallback_chain() -> list:
             logger.info("Cloud mode: Groq only (no Ollama detected).")
 
     return chain
+
+
+# ── Tools that should NEVER be pruned from the retry schema ──
+# These are "delivery" tools that may need to be re-called with corrected args.
+_NEVER_PRUNE_TOOLS = {"share_file", "send_whatsapp_file", "send_whatsapp_message", "request_confirmation"}
+
+# Tools that are safe to prune once successfully executed (one-time lookups)
+_ONE_TIME_TOOLS = {
+    "find_latest_file", "find_file_location", "find_files_by_filter",
+    "list_directory", "read_and_summarize", "open_path", "open_application",
+    "get_system_info", "get_battery_level", "get_current_time", "get_current_volume",
+    "search_web", "read_webpage",
+}
+
+
+def _estimate_task_complexity(message: str) -> int:
+    """
+    Scores a user message for multi-step complexity.
+    Returns the max_iterations the agent loop should use.
+    Simple tasks → 3, medium → 5, complex → 7.
+    """
+    msg = message.lower()
+
+    # MACRO TASKS: Apps like WhatsApp/Spotify need open_app + action = minimum 2 calls
+    # Force at least MEDIUM so they always have enough iterations
+    macro_keywords = ["whatsapp", "spotify", "gmail", "telegram", "instagram",
+                      "facebook", "teams", "youtube music"]
+    is_macro = any(kw in msg for kw in macro_keywords)
+
+    # Each distinct action verb counts as one step
+    action_verbs = ["find", "open", "take", "screenshot", "share", "send", "read",
+                    "summarise", "summarize", "create", "write", "search", "check",
+                    "tell me", "show me", "play", "download", "close", "click"]
+    step_count = sum(1 for v in action_verbs if v in msg)
+
+    if step_count >= 4:
+        logger.info(f"Task complexity: HIGH ({step_count} verbs) → max_iterations=7")
+        return 7
+    elif step_count >= 2 or is_macro:
+        reason = f"{step_count} verbs" + (", macro-app detected" if is_macro else "")
+        logger.info(f"Task complexity: MEDIUM ({reason}) → max_iterations=5")
+        return 5
+    # LOW floor is 4 (not 3) to give any task a one-step safety buffer
+    logger.info(f"Task complexity: LOW ({step_count} verbs) → max_iterations=4")
+    return 4
 
 
 # Build the chain at module load
@@ -502,32 +568,49 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
     Uses routing_info passed from Semantic Router to bypass complex logic.
     """
     routing_info = routing_info or {}
+    routing_level = routing_info.get("level", "low")  # 'low', 'medium', or 'complex'
     
     if routing_info.get("skip_judge", False):
-        logger.info(f"SEMANTIC ROUTER OPTIMIZATION: '{routing_info.get('level')}' intent detected. Bypassing Judge.")
-        result, attachments, _ = await _execute(user_message, memory_history, status_callback=status_callback)
+        logger.info(f"SEMANTIC ROUTER OPTIMIZATION: '{routing_level}' intent detected. Bypassing Judge.")
+        result, attachments, _ = await _execute(user_message, memory_history, status_callback=status_callback, routing_level=routing_level)
         return result, attachments
 
     memory_context = ""
 
     max_supervisor_retries = 2
     current_correction = ""
+    cached_criteria = ""   # Reuse criteria across attempts — no point re-calling on retry
     tool_logs = []
     import asyncio
     for attempt in range(max_supervisor_retries):
         logger.info(f"Supervisor Attempt {attempt + 1}/{max_supervisor_retries}")
-        # 2. PARALLEL EXECUTION: Run Executor and Judge Preparation simultaneously
-        # We pass the memory context and any current correction to the executor
         executor_input = user_message
         if memory_context or current_correction:
             executor_input = f"{user_message}\n{memory_context}\n{current_correction}".strip()
-            
-        executor_task = asyncio.create_task(_execute(executor_input, memory_history, status_callback=status_callback))
-        judge_prep_task = asyncio.create_task(judge_agent.prepare_evaluation_criteria(user_message))
-        
-        # Wait for both to finish simultaneously
-        (result, attachments, attempt_logs), criteria = await asyncio.gather(executor_task, judge_prep_task)
-        
+
+        # On retry, smart-prune one-time lookup tools (not delivery tools like share_file)
+        completed_tool_names_for_retry = set()
+        if attempt > 0 and tool_logs:
+            completed_tool_names_for_retry = {
+                log["name"] for log in tool_logs
+                if not str(log.get("output", "")).strip().lower().startswith("error")
+            }
+            if completed_tool_names_for_retry:
+                logger.info(f"Retry: Pruning completed tools from schema: {completed_tool_names_for_retry}")
+
+        executor_task = asyncio.create_task(
+            _execute(executor_input, memory_history, status_callback=status_callback,
+                     completed_tool_names=completed_tool_names_for_retry, routing_level=routing_level)
+        )
+
+        if attempt == 0:
+            # First attempt: generate criteria in parallel with executor (zero wait cost)
+            judge_prep_task = asyncio.create_task(judge_agent.prepare_evaluation_criteria(user_message))
+            (result, attachments, attempt_logs), cached_criteria = await asyncio.gather(executor_task, judge_prep_task)
+        else:
+            # Retry: criteria is already cached — no LLM call needed, just run executor
+            result, attachments, attempt_logs = await executor_task
+
         tool_logs.extend(attempt_logs)
         
         # SPEED OPTIMIZATION A: Simple Command Bypassing
@@ -554,7 +637,9 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
             except Exception as e:
                 logger.error(f"Failed to take verification screenshot: {e}")
 
-        evaluation = await judge_agent.evaluate_response(user_message, result, attempt_logs, criteria, image_b64=image_b64)
+        # Pass cumulative tool_logs (ALL attempts) so the judge can see work done in prior attempts.
+        # Using only attempt_logs caused attempt-2 judge to not see find_latest_file/take_screenshot from attempt-1.
+        evaluation = await judge_agent.evaluate_response(user_message, result, tool_logs, cached_criteria, image_b64=image_b64)
         logger.info(f"Judge Evaluation: {evaluation}")
         
         if evaluation["task_completed"] and not evaluation["hallucinated"]:
@@ -563,14 +648,39 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
         else:
             # FAILURE: Record mismatch and retry
             logger.warning(f"Judge rejected response: {evaluation['correction']}")
-            current_correction = f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}. Please try again, but DO NOT re-run tools or steps that have already successfully completed."
-            
+
+            # CHECKPOINT CONTEXT: Collect successful steps from this attempt so the
+            # agent doesn't re-run them and waste tokens / hit 413 on retry.
+            successful_steps = [
+                log for log in attempt_logs
+                if not str(log.get("output", "")).strip().lower().startswith("error")
+            ]
+            steps_context = ""
+            if successful_steps:
+                step_lines = []
+                for log in successful_steps:
+                    out_preview = str(log["output"])[:300].replace("\n", " ")
+                    step_lines.append(f"  - {log['name']} -> DONE. Output: {out_preview}")
+                steps_context = (
+                    "\n\nCompleted steps (DO NOT re-run):\n" + "\n".join(step_lines)
+                )
+                logger.info(f"Checkpoint: {len(successful_steps)} step(s) passed to retry.")
+
+            current_correction = (
+                f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}."
+                f"{steps_context}"
+                "\nFor the retry: fix ONLY the failing step. "
+                "Reuse the output values above directly — do NOT call those tools again."
+            )
+
     return f"I tried {max_supervisor_retries} times but could not complete this task. Final issue: {current_correction}", []
 
-async def _execute(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None) -> Tuple[str, List[str], List[Dict]]:
+async def _execute(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None, completed_tool_names: set = None, routing_level: str = "low") -> Tuple[str, List[str], List[Dict]]:
     """
     Internal execution step (The Agent Loop).
     Returns (response_text, attachments, tool_logs)
+    completed_tool_names: set of tool names already executed successfully — stripped from schema on retry.
+    routing_level: hint from the Semantic Router ('low', 'medium', 'complex') used to enforce a minimum iteration budget.
     """
     tool_logs = []
     ctx_summary = monitor_instance.get_current_context_summary()
@@ -598,6 +708,17 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
     else:
         logger.info("Running in Core mode. Advanced tools are stripped to prevent schema failures.")
         
+    # RETRY OPTIMISATION: Smart schema pruning on retry.
+    # Only prune ONE-TIME lookup tools (find, open, read) — never prune delivery tools
+    # (share_file, send_whatsapp_*) since they may need to be re-called with corrected args.
+    if completed_tool_names:
+        safe_to_prune = completed_tool_names & _ONE_TIME_TOOLS  # intersection
+        pruned = [t for t in active_tools if t.name not in safe_to_prune]
+        removed = len(active_tools) - len(pruned)
+        if removed > 0:
+            logger.info(f"Schema smart-pruned: removed {removed} one-time tool(s) {safe_to_prune}. Delivery tools preserved.")
+        active_tools = pruned
+        
     # Dynamically build the fallback chain for the current mode
     current_fallback_base = build_fallback_chain()
     active_fallback_chain = []
@@ -606,7 +727,10 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
         active_fallback_chain.append({"name": option["name"], "llm": llm_with_tools})
     
     attachments = []
-    max_iterations = 3
+    # Merge content-based complexity estimate with semantic router's level hint
+    # so both systems agree on the iteration budget (take the higher of the two)
+    _router_min = {"low": 4, "medium": 5, "complex": 7}.get(routing_level, 4)
+    max_iterations = max(_estimate_task_complexity(user_message), _router_min)
     
     for i in range(max_iterations):
         logger.info(f"Agent Loop Iteration {i+1}/{max_iterations}")
@@ -703,10 +827,15 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                                         obs = await asyncio.to_thread(func, **h_args)
                                         logger.info(f"INLINE FALLBACK SUCCESS: {h_name} returned: {obs}")
                                         tool_logs.append({"name": h_name, "args": h_args, "output": str(obs)})
-                                        # Handle attachments ...
-                                        return str(obs), attachments, tool_logs
-                                    except Exception as e:
-                                        logger.debug(f"Inline fallback tool execution failed: {e}")
+                                        # FIXED: Inject result back into message chain instead of returning early.
+                                        # This allows multi-step tasks (e.g. read PDF → create Word doc) to continue.
+                                        messages.append(SystemMessage(content=f"Tool '{h_name}' executed successfully. Result:\n{str(obs)}"))
+                                        messages.append(HumanMessage(content=f"The previous tool '{h_name}' completed. Now continue with the original request and do any remaining steps."))
+                                        ai_msg = None  # Force next iteration
+                                        break  # Exit fallback chain loop, proceed to next agent iteration
+                                    except Exception as inline_e:
+                                        logger.debug(f"Inline fallback tool execution failed: {inline_e}")
+
                         
                         logger.warning(f"Model {model_name} failed with error: {error_text[:200]}. Falling back to next model...")
                         
@@ -810,8 +939,11 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                         obs = f"Error executing {tool_name}: {str(e)}"
                         logger.error(obs)
 
-                # Append tool result back to context
-                messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                # Append tool result back to context (truncated to prevent 413 overflow)
+                obs_str = str(obs)
+                if len(obs_str) > 1500:
+                    obs_str = obs_str[:1500] + "\n...[output truncated to save context]"
+                messages.append(ToolMessage(content=obs_str, tool_call_id=tool_id))
                 
                 # HALT LOOP if human-in-the-loop action is requested
                 if isinstance(obs, str) and "AWAITING_CONFIRMATION" in obs:

@@ -13,16 +13,31 @@ from opendesk.db.crud import log_screenshot
 from opendesk.utils.ocr_analyzer import ocr_analyzer
 
 @register_tool("take_screenshot")
-def take_screenshot(context: str = "manual screenshot", save_path: str = None) -> str:
-    """Takes a screenshot of the primary screen, saves it, and runs OCR in the background."""
+def take_screenshot(context: str = "manual screenshot", save_path: str = None, wait_seconds: float = 1.5) -> str:
+    """
+    Takes a screenshot of the primary screen, saves it, and runs OCR in the background.
+
+    Args:
+        context: Label for the screenshot (e.g. 'after open', 'manual').
+        save_path: Optional custom save path. Auto-generated if not provided.
+        wait_seconds: Seconds to wait before capturing (default 1.5).
+                      Increase to 3 for heavy apps (PDF viewers, Word, Excel)
+                      that take longer to fully render after being opened.
+    """
     try:
         from datetime import datetime
-        
+
+        # RENDER WAIT: Give the OS/app time to fully paint the window before we capture.
+        # Without this, screenshots taken right after open_path capture blank/loading states.
+        if wait_seconds > 0:
+            logger.debug(f"take_screenshot: waiting {wait_seconds}s for screen to render...")
+            time.sleep(wait_seconds)
+
         if not save_path:
             # 1. Prepare directory
             shot_dir = os.path.join("data", "screenshots")
             os.makedirs(shot_dir, exist_ok=True)
-            
+
             # 2. Generate filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             save_path = os.path.join(shot_dir, f"screenshot_{timestamp}.png")
@@ -30,17 +45,17 @@ def take_screenshot(context: str = "manual screenshot", save_path: str = None) -
             # Create parent dirs safely if save_path has a directory
             if os.path.dirname(save_path):
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            
+
         # 3. Capture and save
         screenshot = ImageGrab.grab()
         screenshot.save(save_path)
-        
+
         # 4. Trigger OCR in background (Zero impact on response time)
         ocr_analyzer.analyze_in_background(save_path)
-        
+
         # 5. Record in database (legacy)
         log_screenshot(save_path, context)
-        
+
         return f"Screenshot saved successfully at {os.path.abspath(save_path)} and queued for OCR."
     except Exception as e:
         return f"Error taking screenshot: {e}"
