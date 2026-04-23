@@ -19,14 +19,15 @@ _tesseract_cmd = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 )
 
+tesseract_available = True
 if not os.path.isfile(_tesseract_cmd) and not shutil.which("tesseract"):
+    tesseract_available = False
     logger.warning(
         f"Tesseract not found at '{_tesseract_cmd}'. "
-        "OCR features will be disabled. "
-        "Install Tesseract or set TESSERACT_CMD env var."
+        "Local OCR disabled. Will use Cloud AI fallback."
     )
-
-pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
+else:
+    pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
 
 class OCRAnalyzer:
     
@@ -39,19 +40,51 @@ class OCRAnalyzer:
         logger.debug("OCR database ready")
     
     def extract_text(self, image_path: str) -> str:
+        if tesseract_available:
+            try:
+                img = Image.open(image_path)
+                # Extract text from image
+                text = pytesseract.image_to_string(img, config='--psm 3')
+                return text.strip()
+            except Exception as e:
+                logger.error(f"Local OCR extraction failed: {e}. Falling back to Cloud OCR.")
+        
+        # Cloud AI Fallback
+        return self._cloud_ocr_fallback(image_path)
+
+    def _cloud_ocr_fallback(self, image_path: str) -> str:
+        logger.info("Using Cloud AI fallback for OCR extraction...")
+        from opendesk.config import GEMINI_API_KEY
+        if not GEMINI_API_KEY:
+            logger.error("Cloud OCR failed: GEMINI_API_KEY not found.")
+            return ""
+        
         try:
-            img = Image.open(image_path)
+            import base64
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            from langchain_core.messages import HumanMessage
             
-            # Extract text from image
-            text = pytesseract.image_to_string(
-                img,
-                config='--psm 3'
+            with open(image_path, "rb") as image_file:
+                image_b64 = base64.b64encode(image_file.read()).decode('utf-8')
+                
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.0-flash", 
+                google_api_key=GEMINI_API_KEY, 
+                temperature=0.0
             )
             
-            return text.strip()
+            msg = HumanMessage(content=[
+                {"type": "text", "text": "Extract all readable text from this image. Do your best to interpret names, chats, and general text. Output ONLY the extracted text with no other explanations, formatting, or markdown backticks."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+            ])
             
+            response = llm.invoke([msg])
+            text = response.content.strip()
+            if text.startswith("```"):
+                text = "\n".join(text.split("\n")[1:-1])
+            return text.strip()
         except Exception as e:
-            logger.error(f"OCR extraction failed: {e}")
+            logger.error(f"Cloud OCR fallback failed: {e}")
             return ""
     
     def extract_keywords(self, text: str) -> str:

@@ -115,6 +115,20 @@ class FindFilesByFilterInput(BaseModel):
     folder: str = Field(default="all", description="Folder to search in. Options: 'downloads', 'documents', 'desktop', 'pictures', 'all' (searches everywhere).")
 
 
+class FindLatestFileInput(BaseModel):
+    file_type: str = Field(default="all", description="File extension to look for (e.g. 'pdf', 'docx', 'jpg'). Use 'all' to find the most recently modified file of any type.")
+    folder: str = Field(default="downloads", description="Folder to search. Options: 'downloads', 'desktop', 'documents', 'pictures', 'music', 'videos'.")
+
+
+class OpenPathInput(BaseModel):
+    path: str = Field(description="The EXACT full file or folder path to open (e.g. 'C:\\Users\\...\\file.pdf'). Also accepts folder aliases: 'downloads', 'desktop', 'documents'.")
+
+
+class ListDirectoryInput(BaseModel):
+    directory_path: str = Field(default="", description="Path or folder alias to list. Use 'downloads', 'desktop', 'documents', 'pictures' etc. Leave empty for the home directory.")
+    files_only: bool = Field(default=False, description="Set to True to show only files (hide subdirectory entries).")
+
+
 # Mapping of tool names to their strict Pydantic Schemas
 # Any tool not in this dictionary will use LangChain's default argument inference.
 TOOL_SCHEMAS = {
@@ -142,4 +156,7 @@ TOOL_SCHEMAS = {
     "find_file_location": FindFileLocationInput,
     "read_and_summarize": ReadAndSummarizeInput,
     "find_files_by_filter": FindFilesByFilterInput,
+    "find_latest_file": FindLatestFileInput,
+    "open_path": OpenPathInput,
+    "list_directory": ListDirectoryInput,
 }

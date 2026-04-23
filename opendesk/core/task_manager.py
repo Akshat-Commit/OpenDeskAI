@@ -150,7 +150,14 @@ class TaskManager:
             if response_text and response_text.strip():
                 simple_memory.add(chat_id, "assistant", response_text)
             
-
+            # ATTACHMENT MEMORY: Store file paths in memory so the agent knows
+            # what files were created this turn and can reference them in follow-ups.
+            # e.g. user: "send me that screenshot" -> agent finds the path here.
+            if attachments:
+                paths_note = "[FILES CREATED THIS TURN]: " + " | ".join(
+                    f"{os.path.basename(p)} (path: {p})" for p in attachments
+                )
+                simple_memory.add(chat_id, "system", paths_note)
 
             # SEND ATTACHMENTS
             # Before editing status message

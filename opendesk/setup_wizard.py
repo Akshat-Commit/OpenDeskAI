@@ -191,19 +191,19 @@ def run_setup():
             ui.live = live
             
             # STEP 1: Python
-            ui.add_step("STEP 1/11 \u2014 CORE ENVIRONMENT")
+            ui.add_step("STEP 1/12 \u2014 CORE ENVIRONMENT")
             v = sys.version_info
             ui.append_text(f"Python {v.major}.{v.minor}.{v.micro} localized.")
             time.sleep(0.4)
             
             # STEP 2: OS Check
-            ui.add_step("STEP 2/11 \u2014 SYSTEM ARCHITECTURE")
+            ui.add_step("STEP 2/12 \u2014 SYSTEM ARCHITECTURE")
             import platform
             ui.append_text(f"OS: {platform.system()} {platform.release()} confirmed.")
             time.sleep(0.4)
             
             # STEP 3: Hardware Scan
-            ui.add_step("STEP 3/11 \u2014 HARDWARE PROFILE")
+            ui.add_step("STEP 3/12 \u2014 HARDWARE PROFILE")
             import psutil
             ram = psutil.virtual_memory().total / (1024**3)
             cpu_count = psutil.cpu_count()
@@ -211,7 +211,7 @@ def run_setup():
             time.sleep(0.4)
             
             # STEP 4: Ollama Support
-            ui.add_step("STEP 4/11 \u2014 LOCAL AI HANDSHAKE")
+            ui.add_step("STEP 4/12 \u2014 LOCAL AI HANDSHAKE")
             ollama_found = False
             recommended_model = "gemma3:12b" if ram >= 12 else "gemma3:4b"
             try:
@@ -224,7 +224,7 @@ def run_setup():
             time.sleep(0.5)
             
             # STEP 5: Mode Selection (moved up from Step 8)
-            ui.add_step("STEP 5/11 \u2014 AI ENGINE MODE")
+            ui.add_step("STEP 5/12 \u2014 AI ENGINE MODE")
             ui.append_text("1. LOCAL     | Privacy & Cost Focus (Runs only on your PC)")
             ui.append_text("2. CLOUD     | Speed & Reliability Focus (Uses Groq + Local)")
             ui.append_text("3. DEVELOPER | Power & Redundancy Focus (Full 6-Model Chain)")
@@ -236,7 +236,7 @@ def run_setup():
             while True:
                 choice = ui.ask("Enter engine choice (1/2/3) (? for help):", default=mode_default)
                 if choice == "?":
-                    ui.append_text("  \ud83d\udca1 1 = LOCAL: Ollama only. Fully private, no internet needed for AI.")
+                    ui.append_text("  💡 1 = LOCAL: Ollama only. Fully private, no internet needed for AI.")
                     ui.append_text("     2 = CLOUD: Groq speed + Ollama fallback. Fast & reliable.")
                     ui.append_text("     3 = DEVELOPER: Full 6-model chain. Max power & redundancy.")
                 else:
@@ -255,7 +255,7 @@ def run_setup():
             
             if mode == "local":
                 # STEP 6A: LOCAL — Model Guide
-                ui.add_step("STEP 6/11 \u2014 MODEL SETUP")
+                ui.add_step("STEP 6/12 \u2014 MODEL SETUP")
                 ui.append_text(f"Based on your {ram:.1f}GB RAM, we recommend: [bold cyan]{recommended_model}[/bold cyan]")
                 ui.append_text("")
                 ui.append_text("  Open a NEW terminal window and run:")
@@ -270,7 +270,7 @@ def run_setup():
                         default=recommended_model
                     )
                     if model_input == "?":
-                        ui.append_text("  \ud83d\udca1 Type the exact model name you pulled with 'ollama pull'.")
+                        ui.append_text("  💡 Type the exact model name you pulled with 'ollama pull'.")
                         ui.append_text(f"     Press Enter to use the recommended: {recommended_model}")
                     else:
                         break
@@ -280,7 +280,7 @@ def run_setup():
             else:
                 # STEP 6B/6C: CLOUD or DEVELOPER — API Keys
                 mode_label = "CLOUD" if mode == "cloud" else "DEVELOPER"
-                ui.add_step(f"STEP 6/11 \u2014 API KEYS ({mode_label})")
+                ui.add_step(f"STEP 6/12 \u2014 API KEYS ({mode_label})")
                 ui.append_text("Minimum 2 API keys required.")
                 ui.append_text("  * Recommended free providers (get free API keys):")
                 ui.append_text("    Groq  -> https://console.groq.com")
@@ -308,7 +308,7 @@ def run_setup():
                     while True:
                         pname = ui.ask("Provider name (e.g. Groq, Gemini, Claude) (? for help, Enter to skip):")
                         if pname == "?":
-                            ui.append_text("  \ud83d\udca1 Supported: Groq, Gemini, GitHub, Claude, OpenAI")
+                            ui.append_text("  💡 Supported: Groq, Gemini, GitHub, Claude, OpenAI")
                             ui.append_text("     Or type any custom name \u2014 key will be auto-generated.")
                         elif not pname or not pname.strip():
                             if provider_count > min_required:
@@ -335,7 +335,7 @@ def run_setup():
                     while True:
                         api_key = ui.ask(f"  API Key for {pname_clean} (? for help):", default=env_values.get(env_key_base, ""))
                         if api_key == "?":
-                            ui.append_text(f"  \ud83d\udca1 Paste the API key from {pname_clean}'s developer console.")
+                            ui.append_text(f"  💡 Paste the API key from {pname_clean}'s developer console.")
                         else:
                             break
                     
@@ -348,7 +348,7 @@ def run_setup():
                         )
                         if model_name == "?":
                             hint_text = f"Recommended: {model_hint}" if model_hint else f"Enter the model name from {pname_clean}'s docs."
-                            ui.append_text(f"  \ud83d\udca1 {hint_text}")
+                            ui.append_text(f"  💡 {hint_text}")
                         else:
                             break
                     
@@ -367,7 +367,7 @@ def run_setup():
                         while True:
                             more = ui.ask("  Add another provider? (y/n, ? for help):", default="n")
                             if more == "?":
-                                ui.append_text("  \ud83d\udca1 Type y to add another API key, n to continue.")
+                                ui.append_text("  💡 Type y to add another API key, n to continue.")
                             else:
                                 break
                         if (more or "n").strip().lower() != "y":
@@ -382,43 +382,43 @@ def run_setup():
                     model = "gemma3:4b"
             
             # STEP 7: Telegram Token
-            ui.add_step("STEP 7/11 \u2014 BOT CREDENTIALS")
+            ui.add_step("STEP 7/12 \u2014 BOT CREDENTIALS")
             ui.append_text("1. Open @BotFather in Telegram")
             while True:
                 token = ui.ask("Paste your Bot Token (? for help):", default=env_values.get("BOT_TOKEN"))
                 if token == "?":  # noqa: S105
-                    ui.append_text("  \ud83d\udca1 Open Telegram \u2192 Search @BotFather \u2192 Send /newbot")
+                    ui.append_text("  💡 Open Telegram \u2192 Search @BotFather \u2192 Send /newbot")
                     ui.append_text("     Give your bot a name \u2192 Copy the token it sends you.")
                 else:
                     break
             ui.append_text("\u2713 Token validated.")
             
             # STEP 8: Bot Username
-            ui.add_step("STEP 8/11 \u2014 IDENTITY LINKING")
+            ui.add_step("STEP 8/12 \u2014 IDENTITY LINKING")
             ui.append_text("Enter the username of your bot (e.g. MyDeskBot)")
             while True:
                 username = ui.ask("Bot Username (without @) (? for help):", default=env_values.get("BOT_USERNAME"))
                 if username == "?":
-                    ui.append_text("  \ud83d\udca1 The username you chose in @BotFather when creating the bot.")
+                    ui.append_text("  💡 The username you chose in @BotFather when creating the bot.")
                     ui.append_text("     Example: MyDeskBot  (no @ symbol, just the name).")
                 else:
                     break
             ui.append_text(f"\u2713 Bot linked: @{username}")
             
             # STEP 9: Authorization
-            ui.add_step("STEP 9/11 \u2014 ADMIN AUTHENTICATION")
+            ui.add_step("STEP 9/12 \u2014 ADMIN AUTHENTICATION")
             ui.append_text("Get your ID from @userinfobot")
             while True:
                 tid = ui.ask("Enter your Telegram Admin ID (? for help):", default=env_values.get("ALLOWED_TELEGRAM_ID"))
                 if tid == "?":
-                    ui.append_text("  \ud83d\udca1 Open Telegram \u2192 Search @userinfobot \u2192 Send any message.")
+                    ui.append_text("  💡 Open Telegram \u2192 Search @userinfobot \u2192 Send any message.")
                     ui.append_text("     It will reply with your numeric ID. Copy and paste it here.")
                 else:
                     break
             ui.append_text(f"\u2713 Admin identity set: {tid}")
             
             # STEP 10: Security PIN
-            ui.add_step("STEP 10/11 \u2014 SECURITY LAYER (2FA)")
+            ui.add_step("STEP 10/12 \u2014 SECURITY LAYER (2FA)")
             ui.append_text("Your Telegram ID is your 'Keycard', but a PIN is your 'Vault Code'.")
             ui.append_text("A PIN is HIGHLY recommended to prevent accidental PC command execution.")
             while True:
@@ -428,7 +428,7 @@ def run_setup():
                     password=True
                 )
                 if pin == "?":
-                    ui.append_text("  \ud83d\udca1 A 4-digit code e.g. 1234. You'll type it before every command.")
+                    ui.append_text("  💡 A 4-digit code e.g. 1234. You'll type it before every command.")
                     ui.append_text("     Press Enter to skip \u2014 bot will respond with one-click access.")
                 else:
                     break
@@ -437,13 +437,30 @@ def run_setup():
             else:
                 ui.append_text("\u2713 2FA Security: BYPASSED (One-click access inherited)")
             
-            # STEP 11: Finalization
-            ui.add_step("STEP 11/11 \u2014 PERSISTENCE GATEWAY")
+            # STEP 11: Local Vision Engine
+            ui.add_step("STEP 11/12 \u2014 LOCAL VISION ENGINE")
+            ui.append_text("  Highly recommended!")
+            if ollama_found:
+                ans_vision = ui.ask("Download Moondream Vision Model? (1.7GB) (y/n)", default="y")
+                if (ans_vision or "y").strip().lower() == "y":
+                    ui.append_text("Downloading Moondream Vision Model... (may take a few minutes)")
+                    try:
+                        subprocess.run(["ollama", "pull", "moondream"], capture_output=True, check=False)  # noqa: S603, S607
+                        ui.append_text("✓ Vision model ready.")
+                    except Exception as e:
+                        ui.append_text(f"[yellow]⚠ Vision model pull failed: {e}[/yellow]")
+                else:
+                    ui.append_text("Skipped Vision model download.")
+            else:
+                ui.append_text("  Ollama not active. Skipping local vision engine.")
+
+            # STEP 12: Finalization
+            ui.add_step("STEP 12/12 \u2014 PERSISTENCE GATEWAY")
             ui.append_text("Finalizing your intelligent environment...")
             while True:
-                ans = ui.ask("\ud83d\udcbe Save changes to .env? (y/n, ? for help)", default="n")
+                ans = ui.ask("💾 Save changes to .env? (y/n, ? for help)", default="n")
                 if (ans or "n").strip().lower() == "?":
-                    ui.append_text("  \ud83d\udca1 Type y to write all settings to the .env file and finish setup.")
+                    ui.append_text("  💡 Type y to write all settings to the .env file and finish setup.")
                     ui.append_text("     Type n to exit without saving \u2014 nothing will be changed.")
                 else:
                     break
@@ -451,19 +468,31 @@ def run_setup():
             if (ans or "n").strip().lower() == 'y':
                 try:
                     save_env(token, username, tid, mode, model, pin, api_keys)
-                    ui.append_text("\u2713 .env configuration persistent.")
+                    ui.append_text("✓ .env configuration persistent.")
                     time.sleep(0.8)
-                    ui.add_step("\u25c8 SESSION COMPLETE \u25c8")
+                    
+                    # Automated Dependency Install
+                    ui.add_step("◈ DOWNLOADING DEPENDENCIES ◈")
+                    ui.append_text("Installing Playwright Browser Engine... (may take a minute)")
+                    try:
+                        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True, check=False)  # noqa: S603
+                        ui.append_text("✓ Browser engine installed.")
+                    except Exception as e:
+                        ui.append_text(f"[yellow]⚠ Browser engine install failed: {e}[/yellow]")
+                        
+                    time.sleep(0.8)
+
+                    ui.add_step("◈ SESSION COMPLETE ◈")
                     ui.append_text("Setup process finalized.")
                     ui.append_text("Run 'opendesk start' to activate remote control.")
                 except PermissionError:
                     ui.append_text("[bold red]\u274c Access Denied! .env is currently locked.[/bold red]")
                     ui.append_text("   Please close your code editor (or stop OpenDesk) and try again.")
             else:
-                ui.append_text("\u2713 Safety Switch Activated: No changes were written to .env.")
+                ui.append_text("✓ Setup aborted: No changes were written to .env.")
                 time.sleep(0.8)
-                ui.add_step("\u25c8 TEST MODE FINISHED \u25c8")
-                ui.append_text("UI validation complete.")
+                ui.add_step("◈ SETUP ABORTED ◈")
+                ui.append_text("You chose not to save.")
                 ui.append_text("Run 'opendesk setup' again when ready to save.")
                 
             time.sleep(1.5)

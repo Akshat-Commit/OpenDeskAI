@@ -22,7 +22,42 @@ def create_word_doc(content: str, filepath: str = None) -> str:
             filepath = _get_default_filename("document", "docx")
         
         doc = Document()
-        doc.add_paragraph(content)
+        import re
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Headings
+            heading_match = re.match(r'^(#{1,6})\s+(.*)', line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                text = heading_match.group(2)
+                # Word headings are 0-indexed for intense matching but usually add_heading handles 1 to 9
+                p = doc.add_heading(level=level)
+            else:
+                # Lists
+                bullet_match = re.match(r'^[\*\-]\s+(.*)', line)
+                number_match = re.match(r'^\d+\.\s+(.*)', line)
+                if bullet_match:
+                    p = doc.add_paragraph(style='List Bullet')
+                    text = bullet_match.group(1)
+                elif number_match:
+                    p = doc.add_paragraph(style='List Number')
+                    text = number_match.group(1)
+                else:
+                    p = doc.add_paragraph()
+                    text = line
+            
+            # Inline bold parser
+            parts = re.split(r'(\*\*.*?\*\*)', text)
+            for part in parts:
+                if part.startswith('**') and part.endswith('**') and len(part) > 4:
+                    p.add_run(part[2:-2]).bold = True
+                else:
+                    p.add_run(part)
+                    
         doc.save(filepath)
         return f"Word document saved successfully at {os.path.abspath(filepath)}"
     except Exception as e:

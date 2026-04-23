@@ -118,7 +118,14 @@ def list_directory(directory_path: str = "", files_only: bool = False) -> str:
         
         if not lines:
             return f"No {'files' if files_only else 'items'} found in '{abs_path}'."
-            
+
+        # Cap output to prevent context window explosion (413 errors)
+        cap = 25
+        total = len(lines)
+        if total > cap:
+            lines = lines[:cap]
+            lines.append(f"  ... and {total - cap} more items (showing first {cap} only)")
+
         return f"Contents of '{abs_path}':\n" + "\n".join(lines)
     except Exception as e:
         return f"Error listing directory '{directory_path}': {e}"
@@ -265,24 +272,20 @@ def find_file_location(
         )
         
         if results:
-            paths_found = []
+            lines = []
             for r in results[:3]:
-                folder = os.path.dirname(r[0])
-                paths_found.append(
-                    f"📁 {folder}"
+                full_path = r[0]
+                lines.append(
+                    f"EXACT_PATH: {full_path}"
                 )
-            
-            response = (
-                f"✅ Found '{filename}':\n"
-            )
-            response += "\n".join(paths_found)
+            response = f"Found '{filename}':\n" + "\n".join(lines)
+            response += "\nNOTE: Use the EXACT_PATH above directly in open_path or read_and_summarize."
             return response
         else:
             return (
-                f"❌ '{filename}' not found "
-                f"in indexed locations.\n"
-                f"It might be in an unusual "
-                f"folder or not yet indexed."
+                f"'{filename}' not found "
+                f"in indexed locations. "
+                f"It might be in an unusual folder or not yet indexed."
             )
     except Exception as e:
         return f"Search error: {e}"
@@ -342,8 +345,8 @@ def read_and_summarize(
                         content += (
                             page.extract_text()
                         )
-            except:
-                content = "Could not read PDF"
+            except Exception as pdf_err:
+                content = f"Could not read PDF: {pdf_err}"
                 
         elif ext in [".txt", ".py", ".md", ".csv"]:
             with open(
@@ -384,16 +387,26 @@ def read_and_summarize(
 
 @register_tool("open_path")
 def open_path(path: str) -> str:
-    """Opens a file or folder using the system's default application. Only allows paths within the user's home directory."""
+    """Opens a file or folder using the system's default application.
+    Accepts absolute paths OR folder aliases: 'downloads', 'desktop', 'documents', 'pictures', 'music', 'videos'.
+    Always use the EXACT_PATH returned from find_latest_file or find_file_location.
+    """
+    # Resolve folder aliases (e.g. 'downloads', 'desktop')
+    lower = path.lower().strip()
+    if lower in ("desktop", "downloads", "documents", "pictures", "music", "videos"):
+        resolved = UniversalPathDetector.get_folder(lower)
+        if resolved and os.path.exists(resolved):
+            path = resolved
+        else:
+            path = os.path.join(HOME_DIR, lower.capitalize())
+
     if not _is_safe_path(path):
         return f"Access denied: '{path}' is outside your home directory ({HOME_DIR})."
     try:
         abs_path = os.path.abspath(os.path.expanduser(path))
         if not os.path.exists(abs_path):
             return f"Error: Path '{abs_path}' does not exist."
-        
-        # Use os.startfile on Windows for the most reliable 'open with default'
-        os.startfile(abs_path) # noqa: S606
+        os.startfile(abs_path)  # noqa: S606
         return f"Successfully opened '{abs_path}' using the system default handler."
     except Exception as e:
         return f"Error opening path '{path}': {e}"
@@ -404,56 +417,73 @@ def find_latest_file(
     folder: str = "downloads"
 ) -> str:
     """
-    Finds the most recently modified file of a specific type in a folder.
-    Use when user says 'latest pdf in downloads', 'most recent file', etc.
-    file_type: pdf, docx, jpg, png, txt
+    Finds the most recently modified file in a folder.
+    Use when user says 'latest file in downloads', 'most recent file', 'newest file', etc.
+    file_type: 'pdf', 'docx', 'jpg', 'png', 'txt', or 'all' (to find any type)
     folder: downloads, desktop, documents, pictures
+    The output always includes an EXACT_PATH line — use that value directly in open_path.
     """
-    import sqlite3
-    from opendesk.utils.file_indexer import file_indexer
+    import datetime
 
-    folder_patterns = {
-        "downloads": "%download%",
-        "desktop": "%desktop%",
-        "documents": "%document%",
-        "pictures": "%picture%",
-        "onedrive": "%onedrive%",
-    }
-    
-    pattern = folder_patterns.get(folder.lower(), f"%{folder.lower()}%")
-    ext = f".{file_type.lower()}" if not file_type.startswith('.') else file_type.lower()
-    
+    # Resolve folder path
+    folder_lower = folder.lower().strip()
+    detected = UniversalPathDetector.get_folder(folder_lower)
+    if detected:
+        folder_path = detected
+    else:
+        folder_path = os.path.join(HOME_DIR, folder_lower.capitalize())
+
+    if not os.path.isdir(folder_path):
+        return f"Folder not found: {folder_path}"
+
+    # Normalize extension filter
+    use_all = file_type.lower().strip() in ("all", "any", "", "*")
+    ext_filter = None
+    if not use_all:
+        ext_filter = f".{file_type.lower()}" if not file_type.startswith(".") else file_type.lower()
+
+    # Scan folder (depth 1 only for speed)
+    best_file = None
+    best_mtime = 0.0
+
     try:
-        conn = sqlite3.connect(file_indexer.db_path)
-        # Using the file_index SQLite table directly
-        results = conn.execute("""
-            SELECT filename, filepath, last_modified, size_kb 
-            FROM file_index 
-            WHERE LOWER(filepath) LIKE ? 
-            AND LOWER(extension) = ? 
-            ORDER BY last_modified DESC 
-            LIMIT 1
-        """, (pattern, ext)).fetchall()
-        conn.close()
-        
-        if results:
-            filename = results[0][0]
-            filepath = results[0][1]
-            modified = results[0][2]
-            size = results[0][3]
-            
-            return (
-                f"Latest {file_type.upper()} found:\n"
-                f"Name: {filename}\n"
-                f"Path: {filepath}\n"
-                f"Modified: {modified}\n"
-                f"Size: {size:.1f} KB"
-            )
-        
-        return f"No recently modified {file_type.upper()} files tracked in {folder}."
-            
-    except Exception as e:
-        return f"Search error in SQLite file index: {str(e)}"
+        for fname in os.listdir(folder_path):
+            full = os.path.join(folder_path, fname)
+            if not os.path.isfile(full):
+                continue
+            if ext_filter and not fname.lower().endswith(ext_filter):
+                continue
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_file = (fname, full, mtime)
+    except PermissionError as pe:
+        return f"Permission denied scanning {folder_path}: {pe}"
+
+    if best_file:
+        fname, fpath, mtime = best_file
+        size_bytes = os.path.getsize(fpath)
+        size_str = (
+            f"{size_bytes} B" if size_bytes < 1024
+            else f"{size_bytes / 1024:.1f} KB" if size_bytes < 1024 * 1024
+            else f"{size_bytes / (1024 * 1024):.1f} MB"
+        )
+        mod_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+        ext_label = os.path.splitext(fname)[1].upper() or "FILE"
+        return (
+            f"Most recent file in {folder}:\n"
+            f"Name: {fname}\n"
+            f"Type: {ext_label}\n"
+            f"Size: {size_str}\n"
+            f"Modified: {mod_str}\n"
+            f"EXACT_PATH: {fpath}\n"
+            f"NOTE: Use the EXACT_PATH above as the argument to open_path."
+        )
+
+    return f"No {'files' if use_all else file_type.upper() + ' files'} found in {folder_path}."
 
 
 @register_tool("find_files_by_filter")

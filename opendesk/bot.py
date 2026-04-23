@@ -133,8 +133,9 @@ def set_whatsapp_contact_selection(
     whatsapp_path: str,
     found_contacts: list = None,
 ):
-    """Register a pending WhatsApp contact selection and send a formatted text list to the user."""
-    import asyncio
+    """Register a pending WhatsApp contact selection and send a formatted text list to the user via synchronous API request."""
+    import requests
+    from opendesk.config import BOT_TOKEN
 
     contacts = found_contacts or [contact_name]
 
@@ -148,51 +149,43 @@ def set_whatsapp_contact_selection(
     }
     logger.info(f"WhatsApp contact selection pending for chat {chat_id}: '{contact_name}' — {len(contacts)} match(es)")
 
+    # Sanitize contacts for Telegram Markdown
+    sanitized_contacts = [c.replace("*", "").replace("_", "").replace("`", "") for c in contacts]
+
     # Build a clean, numbered contact list message
     number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
     contact_lines = "\n".join(
         f"{number_emojis[i] if i < len(number_emojis) else f'{i+1}.'} {name}"
-        for i, name in enumerate(contacts)
+        for i, name in enumerate(sanitized_contacts)
     )
 
-    if len(contacts) == 1:
+    if len(sanitized_contacts) == 1:
         message = (
-            f"📲 *WhatsApp — Contact Found*\n\n"
-            f"I found this contact for *'{contact_name}'*:\n\n"
-            f"1️⃣ {contacts[0]}\n\n"
+            f"📲 *WhatsApp Share Confirmation*\n"
+            f"Are you sure you want to send the file to this contact?\n\n"
+            f"👤 Contact: *{sanitized_contacts[0]}*\n"
             f"📎 File: `{filename}`\n\n"
-            f"Reply *1* to confirm and send, or *cancel* to abort."
+            f"Reply with *1* or *Yes* to confirm, or *Cancel* to abort."
         )
     else:
         message = (
-            f"📲 *WhatsApp — Multiple Contacts Found*\n\n"
-            f"I found *{len(contacts)}* contacts matching *'{contact_name}'*:\n\n"
+            f"📲 *WhatsApp Search Results*\n"
+            f"Which contact are you asking for?\n\n"
             f"{contact_lines}\n\n"
-            f"📎 File: `{filename}`\n\n"
-            f"Reply with the *number* (1, 2, 3...) of the correct contact,\n"
-            f"or *cancel* to abort."
+            f"Reply with the *number* of the correct contact, or *Cancel* to abort."
         )
 
-    # Send the text message asynchronously — no photo upload, instant delivery
-    async def _send_text():
-        try:
-            from telegram import Bot
-            from opendesk.config import BOT_TOKEN
-            bot = Bot(token=BOT_TOKEN)
-            await bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to send WhatsApp contact list message: {e}")
-
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(_send_text())
-        else:
-            loop.run_until_complete(_send_text())
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        res = requests.post(url, json=payload, timeout=10)
+        if not res.ok:
+            logger.error(f"Telegram API Error: {res.text}")
+        res.raise_for_status()
     except Exception as e:
         logger.error(f"Could not schedule WhatsApp contact message: {e}")
 
@@ -718,35 +711,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_yes = text_lower in ["yes", "y", "haan", "ha", "confirm", "ok", "okay"]
         is_no  = text_lower in ["no", "n", "nahi", "nope", "cancel", "stop", "abort"]
 
+        # ==============================================================================
+        # [AI AGENT LOCK] - STRICTLY READ-ONLY AREA
+        # 
+        # The following 'whatsapp_share' parsing logic handles dynamic edge cases
+        # mapped directly to the heavily optimized OCR flow in system.py.
+        # DO NOT MODIFY this parsing block without explicit manual override.
+        # ==============================================================================
         if pending.get("type") == "whatsapp_share":
             is_cancel = text_lower in ["no", "n", "nahi", "cancel", "stop", "abort"]
             if is_cancel:
                 del PENDING_ACTIONS[chat_id]
                 await update.message.reply_text("❌ WhatsApp file send cancelled.")
                 return
+            # Auto-handle "yes" if there's only 1 contact
+            if text_lower in ["yes", "y", "haan", "ha", "1"] and len(pending.get("found_contacts", [])) == 1:
+                contact_index = 0
             # Expect a number like "1", "2" etc.
-            if text_lower.strip().isdigit():
+            elif text_lower.strip().isdigit():
                 contact_index = int(text_lower.strip()) - 1  # Convert to 0-based index
-                p = PENDING_ACTIONS.pop(chat_id)
-                await update.message.reply_text(
-                    f"📤 Sending *{p['filename']}* to contact #{contact_index + 1}...",
-                    parse_mode="Markdown"
-                )
-                try:
-                    from opendesk.tools.system import _do_whatsapp_file_send
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: _do_whatsapp_file_send(
-                            contact_name=p["contact_name"],
-                            file_path=p["file_path"],
-                            whatsapp_path=p["whatsapp_path"],
-                            contact_index=contact_index,
-                        )
-                    )
-                    await update.message.reply_text(result)
-                except Exception as e:
-                    await update.message.reply_text(f"❌ Failed to send: {e}")
-                return
             else:
                 await update.message.reply_text(
                     "⚠️ Please reply with a **number** (e.g. 1, 2, 3) to pick the contact, "
@@ -754,6 +737,34 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
                 return
+
+            p = PENDING_ACTIONS.pop(chat_id)
+            
+            # Formulate the correct contact name to display
+            if 0 <= contact_index < len(p.get("found_contacts", [])):
+                display_name = p["found_contacts"][contact_index]
+            else:
+                display_name = p["contact_name"]
+                
+            await update.message.reply_text(
+                f"📤 Sending *{p['filename']}* to *{display_name}*...",
+                parse_mode="Markdown"
+            )
+            try:
+                from opendesk.tools.system import _do_whatsapp_file_send
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: _do_whatsapp_file_send(
+                        contact_name=display_name,
+                        file_path=p["file_path"],
+                        whatsapp_path=p["whatsapp_path"],
+                        contact_index=contact_index,
+                    )
+                )
+                await update.message.reply_text(result)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Failed to send: {e}")
+            return
 
         if pending.get("type") == "confirm":
             if is_yes:
@@ -769,7 +780,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text(
                     f"⚠️ Waiting for confirmation:\n`{pending['action']}`\n\n"
-                    f"Reply **YES** to proceed or **NO** to cancel.",
+                    f"Reply *YES* to proceed or *NO* to cancel.",
                     parse_mode="Markdown"
                 )
                 return

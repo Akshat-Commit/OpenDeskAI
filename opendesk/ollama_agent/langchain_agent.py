@@ -67,7 +67,8 @@ CORE RULES:
     - If it's a completely new conversation, you may greet warmly. Otherwise, just converse naturally without saying "Hey! OpenDesk here!" every time.
     - Do NOT mention system stats (CPU/RAM) unless specifically asked.
     - ENCOURAGEMENT: After successfully fulfilling a specific task or answering a non-trivial query, append a varied, friendly follow-up question (e.g., "Is there anything else you want to ask?", "What's next?", "How else can I help?"). 
-    - AVOID the encouragement suffix for simple greetings, introductions, or casual chit-chat. Keep those natural.
+    - AVOID the encouragement suffix for simple greetings, introductions, or casual chit-chat.
+    - NEVER add the encouragement suffix if you are calling a tool that pauses for user input (e.g. `send_whatsapp_file`, `request_confirmation`). Just stay completely silent or say "Please check your screen."
 3. FILE OPERATIONS RULES:
    - FORMATTING RULE: If the user asks to "create a file" for notes, summaries, or structured text and does NOT specify an extension, ALWAYS default to a `.docx` file (e.g., `create_word_doc` tool) so that bolding and bullets render beautifully.
    - When user asks for the latest/recent/newest file: Use find_latest_file tool. NEVER use finduserfile.
@@ -618,8 +619,12 @@ async def run(user_message: str, memory_history: str = "", status_callback: Opti
         used_tools = [log["name"] for log in attempt_logs] if attempt_logs else []
         is_simple_task = bool(used_tools) and all(t in SIMPLE_TOOLS for t in used_tools)
         
-        if is_simple_task and not current_correction:
-            logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple command.")
+        # Async tasks that pause execution (WhatsApp logic/Safety Gates)
+        ASYNC_PAUSE_TOOLS = {"send_whatsapp_file", "send_whatsapp_message", "share_file", "request_confirmation"}
+        is_paused_task = bool(used_tools) and any(t in ASYNC_PAUSE_TOOLS for t in used_tools)
+
+        if (is_simple_task or is_paused_task) and not current_correction:
+            logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple/paused command.")
             return result, attachments
 
         # 3. JUDGE AGENT: Evaluate using the pre-computed criteria
