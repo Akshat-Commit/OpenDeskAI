@@ -3,42 +3,39 @@ import base64
 import httpx
 import urllib.parse
 import time
-import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse, HTMLResponse
 from typing import Optional
 from dotenv import load_dotenv
-from collections import defaultdict
 from contextlib import asynccontextmanager
+import asyncpg
 
 load_dotenv()
 
-# TOKEN_STORE[session_id][app_id] = {"access_token": ..., "refresh_token": ..., "timestamp": ...}
-TOKEN_STORE = defaultdict(dict)
-
-# Cleanup background task for memory safety
-async def cleanup_expired_tokens():
-    while True:
-        await asyncio.sleep(60) # Run every minute
-        now = time.time()
-        for sid in list(TOKEN_STORE.keys()):
-            for aid in list(TOKEN_STORE[sid].keys()):
-                # If token is older than 10 minutes, remove it
-                if now - TOKEN_STORE[sid][aid].get("timestamp", 0) > 600:
-                    del TOKEN_STORE[sid][aid]
-            if not TOKEN_STORE[sid]:
-                del TOKEN_STORE[sid]
+db_pool = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Check for critical env var
-    if not os.getenv("PROXY_URL"):
-        print("CRITICAL ERROR: PROXY_URL environment variable is not set!")
+    if not os.getenv("OPENDESK_PROXY_URL"):
+        print("CRITICAL ERROR: OPENDESK_PROXY_URL environment variable is not set!")
     
-    # Start cleanup task
-    cleanup_task = asyncio.create_task(cleanup_expired_tokens())
+    global db_pool
+    db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tokens (
+                session_id TEXT,
+                app_id TEXT,
+                access_token TEXT,
+                refresh_token TEXT,
+                timestamp FLOAT,
+                PRIMARY KEY (session_id, app_id)
+            )
+        """)
+        
     yield
-    cleanup_task.cancel()
+    await db_pool.close()
 
 app = FastAPI(title="OpenDesk Universal Auth Proxy", lifespan=lifespan)
 
@@ -98,7 +95,7 @@ async def login(app_id: str, session_id: str):
     params = {
         "client_id": config["client_id"],
         "response_type": "code",
-        "redirect_uri": f"{os.getenv('PROXY_URL').rstrip('/')}/callback/{app_id}",
+        "redirect_uri": f"{os.getenv('OPENDESK_PROXY_URL').rstrip('/')}/callback/{app_id}",
         "state": session_id, 
     }
     
@@ -129,7 +126,7 @@ async def callback(app_id: str, code: Optional[str] = None, state: Optional[str]
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": f"{os.getenv('PROXY_URL').rstrip('/')}/callback/{app_id}",
+            "redirect_uri": f"{os.getenv('OPENDESK_PROXY_URL').rstrip('/')}/callback/{app_id}",
             "client_id": config["client_id"],
             "client_secret": config["client_secret"],
         }
@@ -151,23 +148,36 @@ async def callback(app_id: str, code: Optional[str] = None, state: Optional[str]
     refresh_token = tokens.get("refresh_token", "")
     
     if session_id:
-        TOKEN_STORE[session_id][app_id] = {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "timestamp": time.time() # Add timestamp for expiration
-        }
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO tokens VALUES ($1,$2,$3,$4,$5)
+                ON CONFLICT (session_id, app_id) 
+                DO UPDATE SET access_token=$3, 
+                refresh_token=$4, timestamp=$5
+            """, session_id, app_id, 
+                access_token, refresh_token, time.time())
     
-    return HTMLResponse(
-        f"<h1>Success!</h1><p>✅ {app_id.title()} connected! You can now close this tab and return to Telegram.</p>"
-    )
+    return HTMLResponse("""
+<html>
+<body style="font-family:sans-serif;text-align:center;
+padding:50px;background:#1a1a2e;color:white;">
+<h1 style="color:#1DB954">✅ Connected!</h1>
+<p>You can now close this tab and return to Telegram.</p>
+<p style="color:#888;font-size:14px">
+OpenDesk has securely saved your access.</p>
+</body>
+</html>
+""")
 
 @app.get("/tokens/{session_id}/{app_id}")
 async def get_tokens(session_id: str, app_id: str):
-    user_tokens = TOKEN_STORE.get(session_id, {})
-    if app_id in user_tokens:
-        token_data = user_tokens.pop(app_id)
-        if not user_tokens:
-            TOKEN_STORE.pop(session_id, None)
-        return token_data
-    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM tokens WHERE session_id=$1 AND app_id=$2", 
+            session_id, app_id
+        )
+        if row:
+            await conn.execute("DELETE FROM tokens WHERE session_id=$1 AND app_id=$2", session_id, app_id)
+            return {"access_token": row["access_token"], "refresh_token": row["refresh_token"]}
+            
     raise HTTPException(status_code=404, detail="Tokens not found or already fetched")
