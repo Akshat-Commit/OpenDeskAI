@@ -67,7 +67,7 @@ async def login(app_id: str, port: int = 8888):
     params = {
         "client_id": config["client_id"],
         "response_type": "code",
-        "redirect_uri": f"{os.getenv('PROXY_URL')}/callback/{app_id}",
+       "redirect_uri": f"{os.getenv('PROXY_URL').rstrip('/')}/callback/{app_id}",
         "state": str(port), # Pass the local user's port through the state
     }
     
@@ -98,7 +98,7 @@ async def callback(app_id: str, code: Optional[str] = None, state: Optional[str]
         data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": f"{os.getenv('PROXY_URL')}/callback/{app_id}",
+            "redirect_uri": f"{os.getenv('PROXY_URL').rstrip('/')}/callback/{app_id}",
             "client_id": config["client_id"],
             "client_secret": config["client_secret"],
         }
