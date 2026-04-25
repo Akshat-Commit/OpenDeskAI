@@ -21,7 +21,10 @@ async def lifespan(app: FastAPI):
         print("CRITICAL ERROR: OPENDESK_PROXY_URL environment variable is not set!")
     
     global db_pool
-    db_pool = await asyncpg.create_pool(os.getenv("DATABASE_URL"))
+    db_pool = await asyncpg.create_pool(
+        os.getenv("DATABASE_URL"),
+        statement_cache_size=0
+    )
     async with db_pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS tokens (
@@ -177,7 +180,6 @@ async def get_tokens(session_id: str, app_id: str):
             session_id, app_id
         )
         if row:
-            await conn.execute("DELETE FROM tokens WHERE session_id=$1 AND app_id=$2", session_id, app_id)
             return {"access_token": row["access_token"], "refresh_token": row["refresh_token"]}
             
     raise HTTPException(status_code=404, detail="Tokens not found or already fetched")
