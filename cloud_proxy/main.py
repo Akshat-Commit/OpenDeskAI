@@ -180,6 +180,41 @@ async def get_tokens(session_id: str, app_id: str):
             session_id, app_id
         )
         if row:
-            return {"access_token": row["access_token"], "refresh_token": row["refresh_token"]}
+            access_token = row["access_token"]
+            refresh_token = row["refresh_token"]
             
-    raise HTTPException(status_code=404, detail="Tokens not found or already fetched")
+            # Refresh if older than 55 minutes (3300 seconds)
+            if time.time() - row["timestamp"] >= 3300 and refresh_token:
+                config = OAUTH_CONFIGS.get(app_id)
+                if config:
+                    data = {
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    }
+                    if config.get("auth_style") == "body":
+                        data["client_id"] = config["client_id"]
+                        data["client_secret"] = config["client_secret"]
+                        
+                    headers = {}
+                    if config.get("auth_style") == "header":
+                        auth_str = f"{config['client_id']}:{config['client_secret']}"
+                        headers["Authorization"] = f"Basic {base64.b64encode(auth_str.encode()).decode()}"
+                        
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            resp = await client.post(config["token_url"], data=data, headers=headers)
+                            if resp.status_code == 200:
+                                new_tokens = resp.json()
+                                access_token = new_tokens.get("access_token", access_token)
+                                refresh_token = new_tokens.get("refresh_token", refresh_token)
+                                
+                                await conn.execute("""
+                                    UPDATE tokens SET access_token=$1, refresh_token=$2, timestamp=$3 
+                                    WHERE session_id=$4 AND app_id=$5
+                                """, access_token, refresh_token, time.time(), session_id, app_id)
+                    except Exception as e:
+                        print(f"Error refreshing {app_id} token: {e}")
+
+            return {"access_token": access_token, "refresh_token": refresh_token}
+            
+    raise HTTPException(status_code=404, detail="Tokens not found")
