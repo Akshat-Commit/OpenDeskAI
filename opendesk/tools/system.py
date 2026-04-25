@@ -35,7 +35,9 @@ def take_screenshot(context: str = "manual screenshot", save_path: str = None, w
 
         if not save_path:
             # 1. Prepare directory
-            shot_dir = os.path.join("data", "screenshots")
+            # Use absolute path to project root to avoid Access Denied from external MCP callers
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            shot_dir = os.path.join(project_root, "data", "screenshots")
             os.makedirs(shot_dir, exist_ok=True)
 
             # 2. Generate filename

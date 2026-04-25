@@ -502,41 +502,111 @@ async def changepin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def apps_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows all indexed apps from the AppIndexer."""
+    """Shows all available MCP apps from mcp_registry.json"""
     user_id = update.message.from_user.id if hasattr(update.message, 'from_user') else None
     if not is_authorized(user_id):
         return
         
-    if not get_session_by_user(user_id):
-        await update.message.reply_text("⚠️ Not connected.")
-        return
-        
-    from opendesk.utils.app_indexer import app_indexer
-    
-    if app_indexer.is_indexing:
-        await update.message.reply_text("⏳ App indexer is currently running in the background. Please wait a moment.")
-        return
-        
-    apps = app_indexer.get_all_apps()
+    from opendesk.mcp_client import mcp_client
+    apps = mcp_client.list_available_apps()
     
     if not apps:
-        await update.message.reply_text("❌ No apps found in the index yet.")
+        await update.message.reply_text("❌ No MCP apps found in registry.")
         return
         
-    total_apps = len(apps)
-    display_limit = 10
-    
-    # Sort and pick top apps (mostly to show common ones first if possible, or just alphabetical)
-    apps.sort(key=lambda x: x["app_name"])
-    
-    msg = f"📱 **Installed Apps** ({total_apps} found):\n"
-    for app in apps[:display_limit]:
-        msg += f"• {app['app_name'].title()} → Ready\n"
+    msg = "🔌 **Available MCP Apps:**\n\n"
+    for app in apps:
+        status = "[Connected ✅]" if app.get("connected") else "[Connect]"
+        msg += f"{app['icon']} {app['name']} — {app['description']} {status}\n"
         
-    if total_apps > display_limit:
-        msg += f"... and {total_apps - display_limit} more"
-        
+    msg += "\nUse `/connect <app_id>` to connect."
     await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def connect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts connection flow for an MCP app."""
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        return
+        
+    if not context.args:
+        await update.message.reply_text("Usage: `/connect <app_id>`", parse_mode='Markdown')
+        return
+        
+    app_id = context.args[0].lower()
+    from opendesk.mcp_client import mcp_client
+    app = next((a for a in mcp_client.list_available_apps() if a["id"] == app_id), None)
+    
+    if not app:
+        await update.message.reply_text(f"❌ Unknown app: {app_id}")
+        return
+        
+    chat_id = update.message.chat_id
+    if app["auth_type"] == "api_key":
+        PENDING_ACTIONS[chat_id] = {
+            "type": "mcp_connect_token",
+            "app_id": app_id,
+        }
+        await update.message.reply_text(f"🔑 Please send your API key for **{app['name']}**:", parse_mode='Markdown')
+    else:
+        auth_url = await mcp_client.start_oauth_flow(app_id, chat_id, context.bot)
+        if auth_url.startswith("Error"):
+            await update.message.reply_text(f"❌ {auth_url}")
+        else:
+            if "localhost" in auth_url:
+                # Telegram buttons do NOT support localhost URLs. Fallback to text for local testing.
+                await update.message.reply_text(
+                    f"🔗 **Local Testing Mode Detected**\n\nClick the link below to authorize **{app['name']}**:\n{auth_url}",
+                    parse_mode='Markdown'
+                )
+            else:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = [[InlineKeyboardButton(f"Connect {app['name']}", url=auth_url)]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"🔗 Please click the button below to authorize **{app['name']}**:",
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+
+async def connected_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists only connected MCP apps with their tools count."""
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        return
+        
+    from opendesk.mcp_client import mcp_client
+    apps = mcp_client.list_connected_apps()
+    
+    if not apps:
+        await update.message.reply_text("❌ No MCP apps are currently connected.")
+        return
+        
+    msg = "✅ **Connected MCP Apps:**\n\n"
+    for app in apps:
+        # In a real scenario we could dynamically call get_app_tools() here,
+        # but to keep it fast we'll just list them.
+        msg += f"• {app['icon']} **{app['name']}** (Ready)\n"
+        
+    msg += "\nUse `/disconnect <app_id>` to disconnect."
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def disconnect_app_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Removes connection and clears token for an MCP app."""
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        return
+        
+    if not context.args:
+        await update.message.reply_text("Usage: `/disconnect <app_id>`", parse_mode='Markdown')
+        return
+        
+    app_id = context.args[0].lower()
+    from opendesk.mcp_client import mcp_client
+    
+    if mcp_client.disconnect_app(app_id):
+        await update.message.reply_text(f"🔌 Disconnected from {app_id}.")
+    else:
+        await update.message.reply_text(f"❌ Failed to disconnect or app not found: {app_id}")
 
 async def stop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Alias for /cancel"""
@@ -718,6 +788,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # mapped directly to the heavily optimized OCR flow in system.py.
         # DO NOT MODIFY this parsing block without explicit manual override.
         # ==============================================================================
+        if pending.get("type") == "mcp_connect_token":
+            app_id = pending["app_id"]
+            token = text.strip()
+            
+            from opendesk.mcp_client import mcp_client
+            
+            # Simple cancellation
+            if text_lower in ["cancel", "stop", "abort"]:
+                del PENDING_ACTIONS[chat_id]
+                await update.message.reply_text("❌ Connection cancelled.")
+                return
+                
+            success = mcp_client.connect_app(app_id, token)
+            del PENDING_ACTIONS[chat_id]
+            
+            if success:
+                await update.message.reply_text(f"✅ Successfully connected to {app_id}!")
+            else:
+                await update.message.reply_text(f"❌ Failed to connect to {app_id}.")
+            return
+
         if pending.get("type") == "whatsapp_share":
             is_cancel = text_lower in ["no", "n", "nahi", "cancel", "stop", "abort"]
             if is_cancel:
@@ -847,6 +938,9 @@ def run_bot():
     app.add_handler(CommandHandler("screenshots", screenshots_handler))
     app.add_handler(CommandHandler("getscreenshot", getscreenshot_handler))
     app.add_handler(CommandHandler("apps", apps_handler))
+    app.add_handler(CommandHandler("connect", connect_handler))
+    app.add_handler(CommandHandler("connected", connected_handler))
+    app.add_handler(CommandHandler("disconnect", disconnect_app_handler))
     app.add_handler(CommandHandler("reconnect", reconnect_handler))
     app.add_handler(CommandHandler("changepin", changepin_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))

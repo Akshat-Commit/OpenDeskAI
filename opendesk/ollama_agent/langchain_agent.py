@@ -224,6 +224,22 @@ When user asks to summarize:
    _italic_ for emphasis
    • for bullet points"""
 
+# MCP KEYWORD MAPPING
+MCP_KEYWORD_MAP = {
+    "spotify": "spotify",
+    "music": "spotify",
+    "github": "github",
+    "repo": "github",
+    "pull request": "github",
+    "issue": "github",
+    "notion": "notion",
+    "notes": "notion",
+    "gmail": "gmail",
+    "email": "gmail",
+    "slack": "slack",
+    "message": "slack"
+}
+
 
 
 def _check_ollama_available() -> bool:
@@ -713,6 +729,56 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
     else:
         logger.info("Running in Core mode. Advanced tools are stripped to prevent schema failures.")
         
+    # ===== MCP AWARE ROUTING =====
+    from opendesk.mcp_client import mcp_client
+    connected_apps = {app["id"] for app in mcp_client.list_connected_apps()}
+    
+    target_mcp_app = None
+    for kw, app_id in MCP_KEYWORD_MAP.items():
+        if kw in user_message.lower() and app_id in connected_apps:
+            target_mcp_app = app_id
+            break
+            
+    if target_mcp_app:
+        logger.info(f"MCP Routing Match: Keyword detected for connected app '{target_mcp_app}'")
+        
+        # Remove fragile fallback tools if the real MCP app is connected
+        if target_mcp_app == "spotify":
+            active_tools = [t for t in active_tools if t.name != "play_spotify_music"]
+            
+        mcp_tools = await mcp_client.get_app_tools(target_mcp_app)
+        
+        from pydantic import create_model
+        for mcp_tool in mcp_tools:
+            # Dynamically convert MCP JSON Schema to Pydantic Model for LangChain
+            schema_dict = mcp_tool.inputSchema or {}
+            fields = {}
+            for key, prop in schema_dict.get('properties', {}).items():
+                ptype = str
+                if prop.get('type') == 'integer': ptype = int
+                elif prop.get('type') == 'boolean': ptype = bool
+                elif prop.get('type') == 'number': ptype = float
+                elif prop.get('type') == 'array': ptype = list
+                
+                required = key in schema_dict.get('required', [])
+                fields[key] = (ptype, ...) if required else (ptype, None)
+                
+            try:
+                args_schema = create_model(mcp_tool.name, **fields)
+                lc_t = StructuredTool.from_function(
+                    func=lambda **kwargs: "MCP Placeholder",
+                    name=mcp_tool.name,
+                    description=mcp_tool.description or f"MCP tool for {target_mcp_app}",
+                    args_schema=args_schema
+                )
+                lc_t.metadata = {"mcp_app_id": target_mcp_app}
+                active_tools.append(lc_t)
+                logger.info(f"Injected MCP tool: {mcp_tool.name}")
+            except Exception as e:
+                logger.error(f"Failed to parse schema for MCP tool {mcp_tool.name}: {e}")
+                
+    # =============================
+        
     # RETRY OPTIMISATION: Smart schema pruning on retry.
     # Only prune ONE-TIME lookup tools (find, open, read) — never prune delivery tools
     # (share_file, send_whatsapp_*) since they may need to be re-called with corrected args.
@@ -895,54 +961,70 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 from opendesk.utils.status_messages import get_status
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
-                func = _TOOLS.get(tool_name)
-                if not func:
-                    obs = f"Error: Tool '{tool_name}' not found. Available: {list(_TOOLS.keys())}"
+                # Check if this is an MCP tool
+                mcp_app_id = None
+                for t in active_tools:
+                    if t.name == tool_name and hasattr(t, 'metadata') and t.metadata and "mcp_app_id" in t.metadata:
+                        mcp_app_id = t.metadata["mcp_app_id"]
+                        break
+                        
+                if mcp_app_id:
+                    logger.info(f"Routing execution to MCP Server: {mcp_app_id}")
+                    if status_callback:
+                        await status_callback(f"Communicating with {mcp_app_id.title()}...")
+                    
+                    obs = await mcp_client.call_tool(mcp_app_id, tool_name, tool_args)
+                    tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
+                    
                 else:
-                    try:
-                        if status_callback:
-                            beautiful_status = get_status(tool_name)
-                            await status_callback(beautiful_status)
-                        
-                        # BLOCKING TOOL: Run in thread to keep event loop free
-                        obs = await asyncio.to_thread(func, **tool_args)
-                        
-                        tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
-                        
-                        # Log command usage in thread too
-                        from opendesk.db.crud import log_command
-                        await asyncio.to_thread(log_command, f"{tool_name}({tool_args})", status="success", output=str(obs))
-                        
-                        # Handle attachments
-                        if isinstance(obs, str) and ("saved successfully at" in obs or "shared successfully at" in obs):
-                            try:
-                                marker = "shared successfully at " if "shared successfully at" in obs else "saved successfully at "
-                                path_str = obs.split(marker)[1].split("\n")[0].strip().strip('"').strip("'")
-                                if os.path.exists(path_str):
-                                    if path_str not in attachments:
-                                        attachments.append(path_str)
-                                        
-                                    if tool_name == "take_screenshot":
-                                        base64_image = _encode_image(path_str)
-                                        
-                                        # 1. Satisfy the LLM's required ToolMessage contract first
-                                        messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
-                                        
-                                        # 2. Inject the actual image back into the context as a HumanMessage
-                                        image_message = HumanMessage(
-                                            content=[
-                                                {"type": "text", "text": f"Here is the screenshot from the screen:"},
-                                                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{base64_image}"}
-                                            ]
-                                        )
-                                        messages.append(image_message)
-                                        continue 
-                            except Exception as e:
-                                logger.error(f"Error processing attachment: {e}")
-                                
-                    except Exception as e:
-                        obs = f"Error executing {tool_name}: {str(e)}"
-                        logger.error(obs)
+                    func = _TOOLS.get(tool_name)
+                    if not func:
+                        obs = f"Error: Tool '{tool_name}' not found. Available: {list(_TOOLS.keys())}"
+                    elif func:
+                        try:
+                            if status_callback:
+                                beautiful_status = get_status(tool_name)
+                                await status_callback(beautiful_status)
+                            
+                            # BLOCKING TOOL: Run in thread to keep event loop free
+                            obs = await asyncio.to_thread(func, **tool_args)
+                            
+                            tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
+                            
+                            # Log command usage in thread too
+                            from opendesk.db.crud import log_command
+                            await asyncio.to_thread(log_command, f"{tool_name}({tool_args})", status="success", output=str(obs))
+                            
+                            # Handle attachments
+                            if isinstance(obs, str) and ("saved successfully at" in obs or "shared successfully at" in obs):
+                                try:
+                                    marker = "shared successfully at " if "shared successfully at" in obs else "saved successfully at "
+                                    path_str = obs.split(marker)[1].split("\n")[0].strip().strip('"').strip("'")
+                                    if os.path.exists(path_str):
+                                        if path_str not in attachments:
+                                            attachments.append(path_str)
+                                            
+                                        if tool_name == "take_screenshot":
+                                            base64_image = _encode_image(path_str)
+                                            
+                                            # 1. Satisfy the LLM's required ToolMessage contract first
+                                            messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                                            
+                                            # 2. Inject the actual image back into the context as a HumanMessage
+                                            image_message = HumanMessage(
+                                                content=[
+                                                    {"type": "text", "text": f"Here is the screenshot from the screen:"},
+                                                    {"type": "image_url", "image_url": f"data:image/jpeg;base64,{base64_image}"}
+                                                ]
+                                            )
+                                            messages.append(image_message)
+                                            continue 
+                                except Exception as e:
+                                    logger.error(f"Error processing attachment: {e}")
+                                    
+                        except Exception as e:
+                            obs = f"Error executing {tool_name}: {str(e)}"
+                            logger.error(obs)
 
                 # Append tool result back to context (truncated to prevent 413 overflow)
                 obs_str = str(obs)

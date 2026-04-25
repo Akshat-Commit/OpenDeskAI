@@ -522,6 +522,47 @@ def update():
             f"[red]Update failed: {e}[/]"
         )
 
+@app.command()
+def mcp():
+    """
+    🔌 Start the OpenDesk MCP Server.
+    Allows Claude Desktop, Cursor, VS Code
+    and other AI tools to control your PC.
+    """
+    import sys as _sys
+
+    # Write startup info to stderr so stdout stays clean for MCP stdio transport
+    _sys.stderr.write("\nOpenDesk MCP Server\n")
+    _sys.stderr.write("  Transport: stdio\n")
+    _sys.stderr.write("  Press Ctrl+C to stop\n\n")
+    _sys.stderr.flush()
+
+    try:
+        from opendesk.mcp_server import run_mcp_server
+        run_mcp_server()
+    except (KeyboardInterrupt, SystemExit):
+        # Normal shutdown — don't print anything, stdout may be closed
+        try:
+            _sys.stderr.write("\nMCP Server stopped.\n")
+            _sys.stderr.flush()
+        except Exception:
+            pass
+    except ImportError:
+        _sys.stderr.write(
+            "  Error: MCP package not installed.\n"
+            "  Run: pip install \"mcp[cli]\"\n"
+        )
+        _sys.stderr.flush()
+        raise typer.Exit(1)
+    except Exception as e:
+        try:
+            _sys.stderr.write(f"  MCP Server error: {e}\n")
+            _sys.stderr.flush()
+        except Exception:
+            pass
+        raise typer.Exit(1)
+
+
 def main():
     app()
 

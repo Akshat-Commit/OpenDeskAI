@@ -42,3 +42,4 @@ python-Levenshtein
 watchdog
 typer
 pyperclip
+mcp[cli]
