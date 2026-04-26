@@ -5,19 +5,25 @@ from opendesk.ollama_agent.langchain_agent import run as run_langchain
 from opendesk.semantic_router import get_routing_info
 
 
-async def run_agent_loop(user_text: str, history: Optional[List[Dict[str, str]]] = None, status_callback: Optional[Callable] = None) -> Tuple[str, List[Dict[str, str]], List[str]]:
+async def run_agent_loop(
+    user_text: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    status_callback: Optional[Callable] = None,
+    routing_info: Optional[Dict] = None,
+) -> Tuple[str, List[Dict[str, str]], List[str]]:
     """
     Wrapper for the Telegram bot to use the LangChain ReAct agent.
-    Maintains compatibility with bot.py's history dictionary format.
-    Uses Semantic Router to optimize speed and context.
-    Provides real-time updates via status_callback.
+    Accepts pre-computed routing_info from bot.py to avoid a redundant LLM call.
     """
-    # 1. ANALYZE COMMAND COMPLEXITY
-    routing = await get_routing_info(user_text)
-    logger.info(f"Routing Decision: {routing['level'].upper()} (Score: {routing['score']})")
+    # 1. ANALYZE COMMAND COMPLEXITY — skip if already done by bot.py
+    if routing_info is None:
+        routing_info = await get_routing_info(user_text)
+    
+    routing = routing_info
+    logger.info(f"Routing Decision: {routing['level'].upper()} (Score: {routing.get('score', '?')})")
 
     if status_callback:
-        await status_callback(f"🧠 Complexity: {routing['level'].upper()}")
+        await status_callback(f"🧠 Working on it...")
 
     # 2. SMART CONTEXT WINDOW
     original_history = list(history) if history else []

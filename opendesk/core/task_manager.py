@@ -1,7 +1,7 @@
 import asyncio
 import os
 from loguru import logger
-from opendesk.agent import run_agent_loop # type: ignore
+from opendesk.agent import run_agent_loop  # type: ignore
 from opendesk.db.crud import log_chat_message # type: ignore
 from telegram.constants import ChatAction # type: ignore
 
@@ -62,31 +62,31 @@ class TaskManager:
                 self.is_running = False
                 self.status_message = None
     
-    async def add_to_queue(self, update, context, command):
+    async def add_to_queue(self, update, context, command, status_msg=None, routing_info=None):
         """Adds a new command to the global queue."""
         queue_size = self.queue.qsize()
         
         if self.is_running and queue_size > 0:
-            # Save queue message reference
-            queue_msg = (
-                await update.message.reply_text(
-                    f"⏳ Added to queue "
-                    f"({queue_size} waiting)"
-                )
-            )
+            # If already running, notify about the queue position
+            if not status_msg:
+                status_msg = await update.message.reply_text(f"⏳ Added to queue ({queue_size} waiting)")
+            else:
+                await status_msg.edit_text(f"⏳ Added to queue ({queue_size} waiting)")
             
             await self.queue.put({
                 "update": update,
                 "context": context,
                 "command": command,
-                "queue_msg": queue_msg
+                "status_msg": status_msg,
+                "routing_info": routing_info
             })
         else:
             await self.queue.put({
                 "update": update,
                 "context": context,
                 "command": command,
-                "queue_msg": None
+                "status_msg": status_msg,
+                "routing_info": routing_info
             })
     
     async def cancel_current_task(self):
@@ -102,7 +102,8 @@ class TaskManager:
         update = task_data["update"]
         context = task_data["context"]
         command = task_data["command"]
-        queue_msg = task_data.get("queue_msg")
+        status_msg = task_data.get("status_msg")
+        routing_info = task_data.get("routing_info")
         chat_id = update.message.chat_id
         
         # Add current user command to memory
@@ -117,12 +118,12 @@ class TaskManager:
         log_chat_message("user", command)
         
         initial_status = get_initial_status(command)
-        if queue_msg:
-            self.status_message = queue_msg
+        if status_msg:
+            self.status_message = status_msg
             try:
                 await self.status_message.edit_text(initial_status)
             except Exception as e:
-                logger.debug(f"Failed to edit queue message: {e}")
+                logger.debug(f"Failed to edit status message: {e}")
         else:
             self.status_message = await update.message.reply_text(initial_status)
         
@@ -143,8 +144,8 @@ class TaskManager:
             set_tool_chat_id(chat_id)
             
             # Execute actual agent loop
-            response_text, new_history, attachments = await run_agent_loop(
-                command, history, status_callback=status_callback
+            response_text, _, attachments = await run_agent_loop(
+                command, history, status_callback=status_callback, routing_info=routing_info
             )
             # Update History with agent's final answer
             if response_text and response_text.strip():

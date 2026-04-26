@@ -51,6 +51,7 @@ APPS = {
         "scopes": "user-modify-playback-state user-read-playback-state user-read-currently-playing",
         "client_id": os.getenv("SPOTIFY_CLIENT_ID"),
         "client_secret": os.getenv("SPOTIFY_CLIENT_SECRET"),
+        "auth_style": "header",   # Spotify uses Basic Auth for token refresh
     },
     "github": {
         "auth_url": "https://github.com/login/oauth/authorize",
@@ -58,6 +59,7 @@ APPS = {
         "scopes": "repo workflow",
         "client_id": os.getenv("GITHUB_CLIENT_ID"),
         "client_secret": os.getenv("GITHUB_CLIENT_SECRET"),
+        "auth_style": "body",     # GitHub sends client creds in body
     },
     "notion": {
         "auth_url": "https://api.notion.com/v1/oauth/authorize",
@@ -65,6 +67,7 @@ APPS = {
         "scopes": "",
         "client_id": os.getenv("NOTION_CLIENT_ID"),
         "client_secret": os.getenv("NOTION_CLIENT_SECRET"),
+        "auth_style": "header",   # Notion uses Basic Auth
     },
     "gmail": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -72,13 +75,24 @@ APPS = {
         "scopes": "https://mail.google.com/ https://www.googleapis.com/auth/gmail.send",
         "client_id": os.getenv("GOOGLE_CLIENT_ID"),
         "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "auth_style": "body",     # Google sends client creds in body
+    },
+    "google_calendar": {
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scopes": "https://www.googleapis.com/auth/calendar",
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "auth_style": "body",     # Google sends client creds in body
     },
     "slack": {
         "auth_url": "https://slack.com/oauth/v2/authorize",
         "token_url": "https://slack.com/api/oauth.v2.access",
-        "scopes": "channels:read chat:write groups:read im:read",
+        "scopes": "channels:read chat:write groups:read im:read files:read users:read",
+        "user_scopes": "channels:history groups:history im:history search:read",
         "client_id": os.getenv("SLACK_CLIENT_ID"),
         "client_secret": os.getenv("SLACK_CLIENT_SECRET"),
+        "auth_style": "header",   # Slack uses Basic Auth
     }
 }
 
@@ -105,10 +119,15 @@ async def login(app_id: str, session_id: str):
     if config["scopes"]:
         params["scope"] = config["scopes"]
         
-    if app_id == "gmail":
+    # Google apps need offline access + consent prompt to get a refresh_token
+    if app_id in ("gmail", "google_calendar"):
         params["access_type"] = "offline"
         params["prompt"] = "consent"
-        
+
+    # Slack needs user_scope for user-level permissions alongside bot scopes
+    if app_id == "slack" and config.get("user_scopes"):
+        params["user_scope"] = config["user_scopes"]
+
     auth_query = urllib.parse.urlencode(params)
     return RedirectResponse(f"{config['auth_url']}?{auth_query}")
 
@@ -173,7 +192,7 @@ OpenDesk has securely saved your access.</p>
 """)
 
 @app.get("/tokens/{session_id}/{app_id}")
-async def get_tokens(session_id: str, app_id: str):
+async def get_tokens(session_id: str, app_id: str, force_refresh: bool = False):
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM tokens WHERE session_id=$1 AND app_id=$2", 
@@ -183,9 +202,10 @@ async def get_tokens(session_id: str, app_id: str):
             access_token = row["access_token"]
             refresh_token = row["refresh_token"]
             
-            # Refresh if older than 55 minutes (3300 seconds)
-            if time.time() - row["timestamp"] >= 3300 and refresh_token:
-                config = OAUTH_CONFIGS.get(app_id)
+            # Refresh if older than 55 minutes (3300 seconds) OR if force_refresh is requested
+            if (time.time() - row["timestamp"] >= 3300 or force_refresh) and refresh_token:
+                # FIX: was OAUTH_CONFIGS (undefined) — correct variable is APPS
+                config = APPS.get(app_id)
                 if config:
                     data = {
                         "grant_type": "refresh_token",
@@ -218,3 +238,22 @@ async def get_tokens(session_id: str, app_id: str):
             return {"access_token": access_token, "refresh_token": refresh_token}
             
     raise HTTPException(status_code=404, detail="Tokens not found")
+
+@app.get("/health")
+async def health_check():
+    """Liveness + DB connectivity check for monitoring and diagnostics."""
+    try:
+        async with db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {
+            "status": "ok",
+            "database": "ok",
+            "proxy": "OpenDesk Auth Proxy",
+            "apps_configured": [k for k, v in APPS.items() if v.get("client_id")]
+        }
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "database": "error",
+            "detail": str(e)
+        }

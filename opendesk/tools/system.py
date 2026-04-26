@@ -550,27 +550,46 @@ def _do_whatsapp_file_send(
 
 @register_tool("play_spotify_music")
 def play_spotify_music(song_name: str) -> str:
-    """A highly reliable macro that opens Spotify desktop filtered natively to Tracks, and plays the top song result."""
+    """A smart tool that plays music on Spotify. Uses high-reliability API if connected, otherwise falls back to UI automation."""
     import urllib.parse
+    from opendesk.mcp_client import mcp_client
+    
+    # 1. SENIOR DEVELOPER CHECK: Is Spotify connected via MCP/OAuth?
+    # If yes, use the 100% reliable API-based search and play.
+    connected_apps = {app["id"] for app in mcp_client.list_connected_apps()}
+    if "spotify" in connected_apps:
+        logger.info(f"Spotify MCP connected. Routing '{song_name}' to reliable API engine.")
+        # This calls the method we just refined in mcp_client.py
+        import asyncio
+        try:
+            # Since this is a tool called in a thread, we use a new event loop or run_coroutine_threadsafe
+            # However, tools are already run in threads by langchain_agent.py (asyncio.to_thread)
+            # So we can just use asyncio.run if there's no loop, or a simpler approach.
+            # Best practice for OpenDesk tools is to keep them synchronous-friendly or handle the loop.
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            result = loop.run_until_complete(mcp_client.spotify_play(song_name))
+            return f"API-Route Success: {result}"
+        except Exception as e:
+            logger.warning(f"MCP playback failed, falling back to UI: {e}")
+
+    # 2. FALLBACK: Fragile UI Macro (for users not yet connected via OAuth)
     try:
         # Encode the song name for URL safety
         safe_song = urllib.parse.quote(song_name)
         
-        # 1. Open Spotify directly into a Track-Filtered search result via URI
-        # This completely hides Albums/Artists, guaranteeing the Top Result is a playable song
+        # Open Spotify directly into a Track-Filtered search result via URI
         logger.info(f"Opening Spotify with track filter for: {song_name}")
         subprocess.run(["cmd", "/c", "start", f"spotify:search:track:{safe_song}"])  # noqa: S603, S607
         
-        # 2. Wait for Spotify to come to foreground and populate results
         time.sleep(4)
-        
-        # Maximize the window to ensure predictable focus and coordinates
         pyautogui.hotkey('win', 'up')
         time.sleep(1)
         
-        # 3. Geometric Click: Natively double-click the first row of the search results
-        # Based on Spotify Desktop UI, the very first track in a list is solidly placed around x=35%, y=14%
-        # Y=14% safely targets the vertical center of the first row (17% was hitting the boundary line)
         logger.info("Executing geometric double-click on first track...")
         screen_w, screen_h = pyautogui.size()
         
@@ -578,20 +597,13 @@ def play_spotify_music(song_name: str) -> str:
         click_y = int(screen_h * 0.14)
         
         pyautogui.moveTo(click_x, click_y, duration=0.2)
-        
-        # Click once to steal OS window focus (critical for Electron apps)
         pyautogui.click()
         time.sleep(0.5)
-        
-        # Now powerfully double click to trigger playback
         pyautogui.doubleClick()
         time.sleep(1)
-        
-        # In rare cases where double-click just highlights it, pressing Enter forces playback
         pyautogui.press('enter')
-
         
-        return f"Successfully executed Spotify macro: Played '{song_name}'."
+        return f"UI-Macro Success: Played '{song_name}'."
     except Exception as e:
         logger.error(f"Spotify macro failed: {e}")
         return f"Error executing Spotify macro: {e}"

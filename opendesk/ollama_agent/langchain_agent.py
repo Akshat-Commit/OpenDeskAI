@@ -222,12 +222,58 @@ When user asks to summarize:
 6. Use Telegram Markdown formatting:
    *bold* for headings
    _italic_ for emphasis
-   • for bullet points"""
+   • for bullet points
+
+GITHUB MCP RULES — VERY IMPORTANT:
+You have a live connection to GitHub's official MCP server. It exposes dozens of real tools dynamically.
+- When the user asks about GitHub (repos, issues, PRs, code), use the GitHub MCP tools that are injected into your schema.
+- The tool names come from the live server — they will look like: `list_issues`, `create_issue`, `list_pull_requests`, `search_repositories`, `get_file_contents`, etc.
+- NEVER guess or hallucinate a GitHub tool name. Only call tools that are listed in your current schema.
+- For multi-step GitHub tasks (e.g. "find all open issues and summarise them"):
+  → Step 1: Call the list/search tool to get data.
+  → Step 2: Format and return a clean summary to the user.
+  → ONLY respond after ALL steps are done.
+- When listing issues or PRs, format them cleanly:
+  🐛 *Open Issues in [repo]*
+  #123 — Bug title
+  #124 — Another bug
+- When creating an issue, confirm with: ✅ *Issue #[number] created successfully!*
+- NEVER say you cannot access GitHub. You have a live MCP connection — just call the tool.
+
+GMAIL MCP RULES:
+You have a live connection to Google's official Gmail MCP server.
+- Tool names will look like: `gmail_search_mail`, `gmail_list_messages`, `gmail_send_email`, `gmail_create_draft`, etc.
+- ALWAYS call `request_confirmation` before sending ANY email — show the user the To, Subject, and Body first.
+- Format email lists cleanly:
+  📧 *Recent Emails*
+  • From: sender@email.com — Subject line
+- NEVER expose raw email IDs or thread IDs to the user.
+
+GOOGLE CALENDAR MCP RULES:
+You have a live connection to Google's official Calendar MCP server.
+- Tool names will look like: `calendar_create_event`, `calendar_list_events`, `calendar_delete_event`, etc.
+- When creating a meeting/event: confirm the title, date, time, and attendees BEFORE calling create_event.
+- Format event lists clearly:
+  📅 *Upcoming Events*
+  • Mon 28 Apr, 3:00 PM — Meeting with Priya
+- For scheduling, always ask for timezone if not specified.
+
+SLACK MCP RULES:
+You have a live connection to Slack's official MCP server.
+- Tool names will look like: `slack_post_message`, `slack_list_channels`, `slack_search_messages`, etc.
+- Always confirm the channel name and message content before sending.
+- Format channel/message results cleanly:
+  💬 *#general* — Last message: "Hey team..."
+- NEVER expose workspace tokens or user IDs to the user."""
 
 # MCP KEYWORD MAPPING
 MCP_KEYWORD_MAP = {
     "spotify": "spotify",
     "music": "spotify",
+    "play": "spotify",
+    "song": "spotify",
+    "artist": "spotify",
+    "playlist": "spotify",
     "github": "github",
     "repo": "github",
     "pull request": "github",
@@ -237,7 +283,13 @@ MCP_KEYWORD_MAP = {
     "gmail": "gmail",
     "email": "gmail",
     "slack": "slack",
-    "message": "slack"
+    "message": "slack",
+    "calendar": "google_calendar",
+    "schedule": "google_calendar",
+    "meeting": "google_calendar",
+    "event": "google_calendar",
+    "appointment": "google_calendar",
+    "remind": "google_calendar",
 }
 
 
@@ -366,13 +418,15 @@ def _estimate_task_complexity(message: str) -> int:
     # MACRO TASKS: Apps like WhatsApp/Spotify need open_app + action = minimum 2 calls
     # Force at least MEDIUM so they always have enough iterations
     macro_keywords = ["whatsapp", "spotify", "gmail", "telegram", "instagram",
-                      "facebook", "teams", "youtube music"]
+                      "facebook", "teams", "youtube music", "github", "repository",
+                      "pull request", "calendar", "schedule", "meeting", "google calendar"]
     is_macro = any(kw in msg for kw in macro_keywords)
 
     # Each distinct action verb counts as one step
     action_verbs = ["find", "open", "take", "screenshot", "share", "send", "read",
                     "summarise", "summarize", "create", "write", "search", "check",
-                    "tell me", "show me", "play", "download", "close", "click"]
+                    "tell me", "show me", "play", "download", "close", "click",
+                    "commit", "merge", "clone", "list", "push", "review", "close issue"]
     step_count = sum(1 for v in action_verbs if v in msg)
 
     if step_count >= 4:
@@ -734,13 +788,22 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
     connected_apps = {app["id"] for app in mcp_client.list_connected_apps()}
     
     target_mcp_app = None
+    msg_low = user_message.lower()
+    
+    # SENIOR DEVELOPER LOGIC: Smart Routing to avoid collisions
+    # Don't route 'play' to Spotify if user mentions 'youtube' or 'video'
+    is_video = any(v in msg_low for v in ["video", "youtube", "watch", "film", "movie", "clip"])
+    
     for kw, app_id in MCP_KEYWORD_MAP.items():
-        if kw in user_message.lower() and app_id in connected_apps:
+        if kw in msg_low and app_id in connected_apps:
+            # Avoid mis-routing 'play' for YouTube to Spotify
+            if app_id == "spotify" and is_video:
+                continue
             target_mcp_app = app_id
             break
             
     if target_mcp_app:
-        logger.info(f"MCP Routing Match: Keyword detected for connected app '{target_mcp_app}'")
+        logger.info(f"MCP Routing Match: Context detected for connected app '{target_mcp_app}'")
         
         # Remove fragile fallback tools if the real MCP app is connected
         if target_mcp_app == "spotify":

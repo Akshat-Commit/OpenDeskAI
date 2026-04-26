@@ -123,6 +123,22 @@ async def send_startup_notification(bot):
     except Exception as e:
         logger.warning(f"Could not send startup notification: {e}")
 
+async def keep_proxy_alive():
+    """Pings the cloud proxy every 10 min to prevent Render sleep."""
+    import aiohttp
+    import asyncio
+    proxy_url = os.getenv("OPENDESK_PROXY_URL", "").rstrip("/")
+    if not proxy_url:
+        return
+    async with aiohttp.ClientSession() as session:
+        while True:
+            await asyncio.sleep(600)
+            try:
+                async with session.get(f"{proxy_url}/") as resp:
+                    logger.info(f"Proxy ping: {resp.status}")
+            except Exception as e:
+                logger.warning(f"Proxy ping failed: {e}")
+
 def run_opendesk():
     """Main entry point to start the full OpenDesk agent services."""
     import subprocess

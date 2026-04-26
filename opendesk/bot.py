@@ -548,25 +548,32 @@ async def connect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         await update.message.reply_text(f"🔑 Please send your API key for **{app['name']}**:", parse_mode='Markdown')
     else:
-        auth_url = await mcp_client.start_oauth_flow(app_id, chat_id, context.bot)
-        if auth_url.startswith("Error"):
-            await update.message.reply_text(f"❌ {auth_url}")
-        else:
-            if "localhost" in auth_url:
-                # Telegram buttons do NOT support localhost URLs. Fallback to text for local testing.
-                await update.message.reply_text(
-                    f"🔗 **Local Testing Mode Detected**\n\nClick the link below to authorize **{app['name']}**:\n{auth_url}",
-                    parse_mode='Markdown'
-                )
+        try:
+            auth_url = await mcp_client.start_oauth_flow(app_id, chat_id, context.bot)
+            if auth_url.startswith("Error"):
+                await update.message.reply_text(f"❌ {auth_url}")
             else:
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                keyboard = [[InlineKeyboardButton(f"Connect {app['name']}", url=auth_url)]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(
-                    f"🔗 Please click the button below to authorize **{app['name']}**:",
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
+                if "localhost" in auth_url:
+                    # Telegram buttons do NOT support localhost URLs. Fallback to text for local testing.
+                    await update.message.reply_text(
+                        f"🔗 **Local Testing Mode Detected**\n\nClick the link below to authorize **{app['name']}**:\n{auth_url}",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    keyboard = [[InlineKeyboardButton(f"Connect {app['name']}", url=auth_url)]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(
+                        f"🔗 Please click the button below to authorize **{app['name']}**:",
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
+                    )
+        except Exception as e:
+            if "ConnectError" in str(type(e).__name__) or "11001" in str(e):
+                await update.message.reply_text("⏳ Proxy is waking up, please try /connect again in 30 seconds.")
+            else:
+                logger.error(f"Error connecting to proxy: {e}")
+                await update.message.reply_text(f"❌ Connection failed: {e}")
 
 async def connected_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lists only connected MCP apps with their tools count."""
@@ -775,124 +782,97 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if USER_PAUSED_STATE.get(chat_id, False):
         return
 
-    # PRIORITY 5.5: Human-in-the-loop confirmation handler (remains critical)
-    if chat_id in PENDING_ACTIONS:
-        pending = PENDING_ACTIONS[chat_id]
-        is_yes = text_lower in ["yes", "y", "haan", "ha", "confirm", "ok", "okay"]
-        is_no  = text_lower in ["no", "n", "nahi", "nope", "cancel", "stop", "abort"]
-
-        # ==============================================================================
-        # [AI AGENT LOCK] - STRICTLY READ-ONLY AREA
-        # 
-        # The following 'whatsapp_share' parsing logic handles dynamic edge cases
-        # mapped directly to the heavily optimized OCR flow in system.py.
-        # DO NOT MODIFY this parsing block without explicit manual override.
-        # ==============================================================================
-        if pending.get("type") == "mcp_connect_token":
-            app_id = pending["app_id"]
-            token = text.strip()
-            
-            from opendesk.mcp_client import mcp_client
-            
-            # Simple cancellation
-            if text_lower in ["cancel", "stop", "abort"]:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text("❌ Connection cancelled.")
-                return
-                
-            success = mcp_client.connect_app(app_id, token)
-            del PENDING_ACTIONS[chat_id]
-            
-            if success:
-                await update.message.reply_text(f"✅ Successfully connected to {app_id}!")
-            else:
-                await update.message.reply_text(f"❌ Failed to connect to {app_id}.")
-            return
-
-        if pending.get("type") == "whatsapp_share":
-            is_cancel = text_lower in ["no", "n", "nahi", "cancel", "stop", "abort"]
-            if is_cancel:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text("❌ WhatsApp file send cancelled.")
-                return
-            # Auto-handle "yes" if there's only 1 contact
-            if text_lower in ["yes", "y", "haan", "ha", "1"] and len(pending.get("found_contacts", [])) == 1:
-                contact_index = 0
-            # Expect a number like "1", "2" etc.
-            elif text_lower.strip().isdigit():
-                contact_index = int(text_lower.strip()) - 1  # Convert to 0-based index
-            else:
-                await update.message.reply_text(
-                    "⚠️ Please reply with a **number** (e.g. 1, 2, 3) to pick the contact, "
-                    "or **cancel** to abort.",
-                    parse_mode="Markdown"
-                )
-                return
-
-            p = PENDING_ACTIONS.pop(chat_id)
-            
-            # Formulate the correct contact name to display
-            if 0 <= contact_index < len(p.get("found_contacts", [])):
-                display_name = p["found_contacts"][contact_index]
-            else:
-                display_name = p["contact_name"]
-                
-            await update.message.reply_text(
-                f"📤 Sending *{p['filename']}* to *{display_name}*...",
-                parse_mode="Markdown"
-            )
-            try:
-                from opendesk.tools.system import _do_whatsapp_file_send
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: _do_whatsapp_file_send(
-                        contact_name=display_name,
-                        file_path=p["file_path"],
-                        whatsapp_path=p["whatsapp_path"],
-                        contact_index=contact_index,
-                    )
-                )
-                await update.message.reply_text(result)
-            except Exception as e:
-                await update.message.reply_text(f"❌ Failed to send: {e}")
-            return
-
-        if pending.get("type") == "confirm":
-            if is_yes:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text("✅ Confirmed! Proceeding...")
-                approved_command = f"[USER CONFIRMED] {pending['original_command']}"
-                await task_manager.add_to_queue(update, context, approved_command)
-                return
-            elif is_no:
-                del PENDING_ACTIONS[chat_id]
-                await update.message.reply_text("❌ Cancelled. Action aborted.")
-                return
-            else:
-                await update.message.reply_text(
-                    f"⚠️ Waiting for confirmation:\n`{pending['action']}`\n\n"
-                    f"Reply *YES* to proceed or *NO* to cancel.",
-                    parse_mode="Markdown"
-                )
-                return
-
-    # PRIORITY 6: CLASSIFY INTENT (Laptop command vs General chat)
-    # Use Semantic Router to decide if we need the heavy agent pipeline
+    # PRIORITY 6: CLASSIFY INTENT (Fast Route)
+    # We do this BEFORE state checks so we don't 'eat' chat messages in a state
     routing = await get_routing_info(text)
-    if routing["level"] in ["simple", "medium", "complex"]:
+    is_chat = routing.get("is_chat", False)
+
+    # PRIORITY 7: Human-in-the-loop confirmation handler
+    if chat_id in PENDING_ACTIONS:
+        # Only consume the message if it's NOT a general chat message
+        # This allows users to ask questions while in a state!
+        if not is_chat:
+            pending = PENDING_ACTIONS[chat_id]
+            is_yes = text_lower in ["yes", "y", "haan", "ha", "confirm", "ok", "okay"]
+            is_no  = text_lower in ["no", "n", "nahi", "nope", "cancel", "stop", "abort"]
+
+            if pending.get("type") == "mcp_connect_token":
+                app_id = pending["app_id"]
+                token = text.strip()
+                
+                from opendesk.mcp_client import mcp_client
+                
+                if is_no:
+                    del PENDING_ACTIONS[chat_id]
+                    await update.message.reply_text("❌ Connection cancelled.")
+                    return
+                    
+                success = mcp_client.connect_app(app_id, token)
+                del PENDING_ACTIONS[chat_id]
+                
+                if success:
+                    await update.message.reply_text(f"✅ Successfully connected to {app_id}!")
+                else:
+                    await update.message.reply_text(f"❌ Failed to connect to {app_id}.")
+                return
+
+            if pending.get("type") == "whatsapp_share":
+                if is_no:
+                    del PENDING_ACTIONS[chat_id]
+                    await update.message.reply_text("❌ WhatsApp file send cancelled.")
+                    return
+                # Auto-handle "yes" if there's only 1 contact
+                if text_lower in ["yes", "y", "haan", "ha", "1"] and len(pending.get("found_contacts", [])) == 1:
+                    contact_index = 0
+                elif text_lower.strip().isdigit():
+                    contact_index = int(text_lower.strip()) - 1
+                else:
+                    await update.message.reply_text("⚠️ Please reply with a **number** or **cancel** to abort.", parse_mode="Markdown")
+                    return
+
+                p = PENDING_ACTIONS.pop(chat_id)
+                display_name = p["found_contacts"][contact_index] if 0 <= contact_index < len(p.get("found_contacts", [])) else p["contact_name"]
+                await update.message.reply_text(f"📤 Sending *{p['filename']}* to *{display_name}*...", parse_mode="Markdown")
+                try:
+                    from opendesk.tools.system import _do_whatsapp_file_send
+                    result = await asyncio.get_event_loop().run_in_executor(None, lambda: _do_whatsapp_file_send(display_name, p["file_path"], p["whatsapp_path"], contact_index))
+                    await update.message.reply_text(result)
+                except Exception as e:
+                    await update.message.reply_text(f"❌ Failed to send: {e}")
+                return
+
+            if pending.get("type") == "confirm":
+                if is_yes:
+                    del PENDING_ACTIONS[chat_id]
+                    await update.message.reply_text("✅ Confirmed! Proceeding...")
+                    await task_manager.add_to_queue(update, context, f"[USER CONFIRMED] {pending['original_command']}")
+                    return
+                elif is_no:
+                    del PENDING_ACTIONS[chat_id]
+                    await update.message.reply_text("❌ Cancelled. Action aborted.")
+                    return
+                else:
+                    await update.message.reply_text(f"⚠️ Waiting for confirmation:\n`{pending['action']}`\n\nReply *YES* to proceed or *NO* to cancel.", parse_mode="Markdown")
+                    return
+
+    # PRIORITY 8: ROUTE BY INTENT
+    if not is_chat:
         logger.info(f"Intent classified as LAPTOP COMMAND ({routing['level']}). Queuing for agent.")
-        await task_manager.add_to_queue(update, context, text)
+        # Provide immediate feedback to the user
+        status_msg = await update.message.reply_text("🔍 Analyzing request...")
+        await task_manager.add_to_queue(update, context, text, status_msg=status_msg, routing_info=routing)
         return
 
-    # PRIORITY 7: UNKNOWN -> Fast General Chat
+    # PRIORITY 9: GENERAL CHAT
     logger.info(f"Intent classified as GENERAL. Routing to fast LLM fallback.")
     await handle_unknown(update, context, text)
 
 async def post_init(application):
     """Start the global TaskManager queue processor."""
     task_manager.processor_task = asyncio.create_task(task_manager.start_queue_processor())
-    from opendesk.main import send_startup_notification
+    from opendesk.main import send_startup_notification, keep_proxy_alive
     await send_startup_notification(application.bot)
+    asyncio.create_task(keep_proxy_alive())
 
 async def post_stop(application):
     """Cleanly cancel the background queue processor."""
