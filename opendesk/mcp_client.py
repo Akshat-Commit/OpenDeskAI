@@ -551,10 +551,9 @@ class ConnectorBroker:
                 Tool("spotify_like", "Like the currently playing song on Spotify (add to liked songs)", {"type": "object", "properties": {}})
             ]
             
-        # For all MCP SSE apps (GitHub, Gmail, Notion, etc.) discover tools dynamically.
         # If the app is hosted on our Render proxy, use the REST MCP discovery
         proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
-        if proxy_base and app_id in ["notion", "github"]:
+        if proxy_base and app_id in ["notion"]:
             try:
                 import aiohttp
                 async with aiohttp.ClientSession() as session_req:
@@ -592,7 +591,7 @@ class ConnectorBroker:
         # For all MCP SSE apps (GitHub, Gmail, Notion, etc.) route through the live session.
         # If the app is hosted on our Render proxy, use the REST MCP call
         proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
-        if proxy_base and app_id in ["notion", "github"]:
+        if proxy_base and app_id in ["notion"]:
             try:
                 session_id = self.get_session_id(app_id)
                 import aiohttp

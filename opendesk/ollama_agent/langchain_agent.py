@@ -266,6 +266,15 @@ You have a live connection to Slack's official MCP server.
   💬 *#general* — Last message: "Hey team..."
 - NEVER expose workspace tokens or user IDs to the user.
 
+HINGLISH SUPPORT:
+You may receive requests in Hinglish (Hindi + English mix).
+Examples:
+- 'mera username kya hai' -> Interpret as 'what is my username'
+- 'repos dikhao' -> Interpret as 'list my repositories'
+- 'issue banao' -> Interpret as 'create an issue'
+- 'bhejo' -> Interpret as 'send/share'
+Always interpret Hinglish intent naturally and map to correct tools.
+
 NOTION MCP RULES (GROQ OPTIMIZATION):
 When using notion_create_page:
 - title is required
@@ -924,9 +933,32 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 for idx, fallback_option in enumerate(active_fallback_chain):
                     model_name = fallback_option["name"]
                     llm = fallback_option["llm"]
+                    
+                    # Fix 3: Token overflow protection for GitHub GPT-4o-mini (Azure limit 8k)
+                    final_messages = messages_to_send
+                    if "GitHub GPT-4o-mini" in model_name:
+                        logger.info(f"Applying aggressive context scrubbing for {model_name}...")
+                        scrubbed = [messages_to_send[0]] # Always keep System Message
+                        
+                        # Only keep the last 2 messages of actual interaction
+                        recent = messages_to_send[-2:] if len(messages_to_send) > 2 else messages_to_send[1:]
+                        
+                        for m in recent:
+                            # 1. Strip images
+                            if isinstance(m, HumanMessage) and isinstance(m.content, list):
+                                text_parts = [p["text"] for p in m.content if p.get("type") == "text"]
+                                m = HumanMessage(content="\n".join(text_parts) if text_parts else "[Image Removed]")
+                            
+                            # 2. Truncate tool results to 500 chars
+                            if isinstance(m, ToolMessage) and len(m.content) > 500:
+                                m = ToolMessage(content=m.content[:500] + "... [TRUNCATED]", tool_call_id=m.tool_call_id)
+                                
+                            scrubbed.append(m)
+                        final_messages = scrubbed
+
                     try:
                         logger.info(f"Attempting invocation with {model_name}...")
-                        ai_msg = llm.invoke(messages_to_send)
+                        ai_msg = llm.invoke(final_messages)
                         break # Success! Break out of the fallback loop
                     except Exception as e:
                         error_text = str(e).lower()
