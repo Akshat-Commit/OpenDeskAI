@@ -12,6 +12,39 @@ import asyncpg
 
 load_dotenv()
 
+# Notion Tool Definitions (MCP Schema)
+NOTION_TOOLS = [
+    {
+        "name": "notion_search",
+        "description": "Search for pages or databases in Notion by title.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The text to search for"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "notion_create_page",
+        "description": "Create a new page in Notion.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "parent_id": {"type": "string", "description": "The ID of the parent page or database"},
+                "title": {"type": "string", "description": "The title of the new page"},
+                "content": {"type": "string", "description": "Optional initial text content for the page"}
+            },
+            "required": ["parent_id", "title"]
+        }
+    },
+    {
+        "name": "notion_list_databases",
+        "description": "List all databases accessible to this integration.",
+        "inputSchema": {"type": "object", "properties": {}}
+    }
+]
+
 db_pool = None
 
 @asynccontextmanager
@@ -238,6 +271,70 @@ async def get_tokens(session_id: str, app_id: str, force_refresh: bool = False):
             return {"access_token": access_token, "refresh_token": refresh_token}
             
     raise HTTPException(status_code=404, detail="Tokens not found")
+
+# --- MCP SERVER ENDPOINTS ---
+# These endpoints allow the OpenDesk bot to discover and call tools dynamically
+
+@app.get("/mcp/{app_id}/tools")
+async def mcp_list_tools(app_id: str):
+    """Dynamic tool discovery for the agent."""
+    if app_id == "notion":
+        return {"tools": NOTION_TOOLS}
+    return {"tools": []}
+
+@app.post("/mcp/{app_id}/call")
+async def mcp_call_tool(app_id: str, request: dict, session_id: str = None):
+    """Executes an MCP tool call against the target app's API."""
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+        
+    # 1. Get tokens for this session
+    tokens = await get_tokens(session_id, app_id)
+    token = tokens.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail=f"No {app_id} token found. Please connect first.")
+
+    tool_name = request.get("tool")
+    args = request.get("args", {})
+
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json"
+        }
+
+        if tool_name == "notion_search":
+            resp = await client.post("https://api.notion.com/v1/search", 
+                                   headers=headers, 
+                                   json={"query": args.get("query"), "sort": {"direction": "descending", "timestamp": "last_edited_time"}})
+            return resp.json()
+
+        elif tool_name == "notion_create_page":
+            parent_id = args.get("parent_id")
+            title = args.get("title")
+            content = args.get("content", "")
+            
+            payload = {
+                "parent": {"page_id": parent_id} if len(parent_id) > 30 else {"database_id": parent_id},
+                "properties": {
+                    "title": {"title": [{"text": {"content": title}}]} if len(parent_id) > 30 else {"Name": {"title": [{"text": {"content": title}}]}}
+                }
+            }
+            if content:
+                payload["children"] = [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": content}}]}}]
+            
+            resp = await client.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
+            return resp.json()
+
+        elif tool_name == "notion_list_databases":
+            resp = await client.post("https://api.notion.com/v1/search", 
+                                   headers=headers, 
+                                   json={"filter": {"value": "database", "property": "object"}})
+            return resp.json()
+
+    return {"error": f"Tool {tool_name} not implemented for {app_id}"}
+
 
 @app.get("/health")
 async def health_check():
