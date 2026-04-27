@@ -264,7 +264,15 @@ You have a live connection to Slack's official MCP server.
 - Always confirm the channel name and message content before sending.
 - Format channel/message results cleanly:
   💬 *#general* — Last message: "Hey team..."
-- NEVER expose workspace tokens or user IDs to the user."""
+- NEVER expose workspace tokens or user IDs to the user.
+
+NOTION MCP RULES (GROQ OPTIMIZATION):
+When using notion_create_page:
+- title is required
+- parent_id can be empty string '' if not specified
+- content can be empty string '' if not specified
+- NEVER pass null for any parameter
+- Always use empty string '' as default"""
 
 # MCP KEYWORD MAPPING
 MCP_KEYWORD_MAP = {
@@ -759,12 +767,19 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
     """
     tool_logs = []
     ctx_summary = monitor_instance.get_current_context_summary()
+    # Fix 3: Truncate large OCR text/system context to 500 chars to avoid token limits
+    if ctx_summary and len(ctx_summary) > 500:
+        ctx_summary = ctx_summary[:500] + "... [TRUNCATED]"
     
     # Hide system context in a way that the model knows it's background data
     system_ctx = f"[BACKGROUND SYSTEM STATE - DO NOT REPEAT UNLESS ASKED]\n{ctx_summary}\n"
     
     input_text = f"{system_ctx}\nUser Request: {user_message}"
     if memory_history:
+        # Fix 3: Truncate conversation history for judge/executor to 3 messages
+        history_lines = memory_history.strip().split('\n')
+        if len(history_lines) > 3:
+            memory_history = "\n".join(history_lines[-3:])
         input_text = f"Recent Conversation History:\n{memory_history}\n\n{input_text}"
         
     messages: List[Any] = [

@@ -17,10 +17,11 @@
   {
     "id": "github",
     "name": "GitHub",
-    "icon": "\ud83d\udc19",
-    "mcp_url": "https://opendesk-github-mcp.opendesk.workers.dev/sse",
+    "icon": "🐙",
+    "mcp_url": "stdio://local/github-mcp-server",
+    "mcp_type": "stdio",
     "auth_type": "oauth",
-    "description": "Manage repositories, issues, and pull requests.",
+    "description": "Manage repositories, issues, and pull requests locally via stdio.",
     "connected": true,
     "scopes": [
       "repo",

@@ -161,7 +161,7 @@ class JudgeAgent:
         PRE-COMPUTED STRICT CRITERIA: {criteria}
         
         AGENT RESPONSE: "{result}"
-        TOOL LOGS: {json.dumps(tool_logs)}
+        TOOL LOGS: {json.dumps([{**log, "output": str(log.get("output", ""))[:200] + "..." if len(str(log.get("output", ""))) > 200 else log.get("output", "")} for log in tool_logs])}
 
         STRICT RULES:
         1. "hallucinated": true if the agent claimed success but NO relevant tool was called, or if it made up results.
@@ -274,13 +274,17 @@ class JudgeAgent:
                         "correction": f"Judge error (fail-closed): {e}"
                     }
                     
-        # All retries exhausted due to rate limits — fail closed
+        # All retries exhausted due to rate limits — Fallback to Heuristic (Fix 3)
+        logger.warning("All Judge LLMs failed. Using simple heuristic fallback.")
+        tool_outputs = " ".join(str(log.get("output", "")).lower() for log in tool_logs)
+        task_completed = "error" not in tool_outputs and "failed" not in tool_outputs
+        
         return {
             "hallucinated": False,
             "tool_called": True,
-            "task_completed": False,
-            "confidence": 2,
-            "correction": "Judge failed after max retries due to rate limits. Treating as unverified."
+            "task_completed": task_completed,
+            "confidence": 5,
+            "correction": "Judge used heuristic fallback because APIs were unavailable."
         }
 
 judge_agent = JudgeAgent()

@@ -27,15 +27,23 @@ NOTION_TOOLS = [
     },
     {
         "name": "notion_create_page",
-        "description": "Create a new page in Notion.",
+        "description": "Create a new page in Notion workspace",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "parent_id": {"type": "string", "description": "The ID of the parent page or database"},
                 "title": {"type": "string", "description": "The title of the new page"},
-                "content": {"type": "string", "description": "Optional initial text content for the page"}
+                "parent_id": {
+                    "type": "string", 
+                    "description": "Parent page/database ID. Leave empty for root.",
+                    "default": ""
+                },
+                "content": {
+                    "type": "string", 
+                    "description": "Page content. Can be empty.",
+                    "default": ""
+                }
             },
-            "required": ["parent_id", "title"]
+            "required": ["title"]
         }
     },
     {
@@ -311,16 +319,28 @@ async def mcp_call_tool(app_id: str, request: dict, session_id: str = None):
             return resp.json()
 
         elif tool_name == "notion_create_page":
-            parent_id = args.get("parent_id")
+            parent_id = args.get("parent_id") or ""
             title = args.get("title")
-            content = args.get("content", "")
+            content = args.get("content") or ""
             
-            payload = {
-                "parent": {"page_id": parent_id} if len(parent_id) > 30 else {"database_id": parent_id},
-                "properties": {
-                    "title": {"title": [{"text": {"content": title}}]} if len(parent_id) > 30 else {"Name": {"title": [{"text": {"content": title}}]}}
+            # If parent_id is empty, try to find a workspace root or handle as error if required
+            if not parent_id:
+                # Notion requires a parent. For root pages, it's usually 'workspace': true 
+                # but that only works for certain integrations. Defaulting to a safer check.
+                payload = {
+                    "parent": {"type": "workspace", "workspace": True},
+                    "properties": {
+                        "title": {"title": [{"text": {"content": title}}]}
+                    }
                 }
-            }
+            else:
+                payload = {
+                    "parent": {"page_id": parent_id} if len(parent_id) > 30 else {"database_id": parent_id},
+                    "properties": {
+                        "title": {"title": [{"text": {"content": title}}]} if len(parent_id) > 30 else {"Name": {"title": [{"text": {"content": title}}]}}
+                    }
+                }
+            
             if content:
                 payload["children"] = [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": content}}]}}]
             

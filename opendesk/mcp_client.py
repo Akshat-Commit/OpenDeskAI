@@ -12,6 +12,7 @@ import aiohttp
 import webbrowser
 import asyncio
 import uuid
+from mcp.client.stdio import stdio_client, StdioServerParameters
 
 BASE_DIR = Path(__file__).parent
 REGISTRY_PATH = BASE_DIR / "mcp_registry.json"
@@ -204,7 +205,6 @@ class GitHubConnector(BaseConnector):
         if not proxy_base:
             return ""
         try:
-            import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{proxy_base}/tokens/{session_id}/github") as resp:
                     if resp.status == 200:
@@ -214,37 +214,65 @@ class GitHubConnector(BaseConnector):
             logger.error(f"Failed to fetch GitHub token: {e}")
         return ""
 
-    def get_app_tools(self) -> List[Tool]:
-        return [
-            Tool(name="listRepositories", description="List repositories for the authenticated user", inputSchema={"type": "object", "properties": {"visibility": {"type": "string", "enum": ["all", "public", "private"]}, "sort": {"type": "string"}}}),
-            Tool(name="searchRepositories", description="Search for GitHub repositories", inputSchema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
-            Tool(name="getFileContents", description="Get the contents of a file or directory", inputSchema={"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "path": {"type": "string"}}, "required": ["owner", "repo", "path"]}),
-            Tool(name="listIssues", description="List issues in a repository", inputSchema={"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "state": {"type": "string", "enum": ["open", "closed", "all"]}}, "required": ["owner", "repo"]}),
-            Tool(name="createIssue", description="Create a new issue", inputSchema={"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"}}, "required": ["owner", "repo", "title", "body"]})
-        ]
+    async def _get_stdio_session(self):
+        """Starts the local GitHub MCP server if not already running."""
+        if hasattr(self, "_session") and self._session:
+            return self._session
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
         app = next((a for a in self.broker.registry if a["id"] == "github"), None)
         if not app or not app.get("connected"):
-            return "GitHub is not connected."
+            logger.error("GitHub is not connected.")
+            return None
 
+        # Fetch token from Proxy (Prompt 2)
         token = await self.get_oauth_token(app.get("session_id", ""))
         if not token:
-            token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+            logger.error("No GitHub OAuth token found in proxy.")
+            return None
 
-        url = app["mcp_url"].replace("/sse", "/call")
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        server_path = os.path.join(os.getcwd(), "github-mcp-server", "dist", "index.js")
         
+        server_params = StdioServerParameters(
+            command="node",
+            args=[server_path],
+            env={**os.environ, "GITHUB_TOKEN": token}
+        )
+
         try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json={"tool": name, "args": arguments}) as resp:
-                    if resp.status == 401:
-                        return "GitHub authentication failed. Please re-authenticate."
-                    result = await resp.json()
-                    return str(result)
+            # We use the broker's exit_stack to manage the context
+            transport = await self.broker.exit_stack.enter_async_context(stdio_client(server_params))
+            read, write = transport
+            session = await self.broker.exit_stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            self._session = session
+            logger.info("Local GitHub stdio server started successfully.")
+            return session
         except Exception as e:
-            return f"Failed to execute GitHub tool: {e}"
+            logger.error(f"Failed to start GitHub stdio server: {e}")
+            return None
+
+    async def get_app_tools(self) -> List[Tool]:
+        session = await self._get_stdio_session()
+        if session:
+            try:
+                response = await session.list_tools()
+                return [Tool(t.name, t.description, t.inputSchema) for t in response.tools]
+            except Exception as e:
+                logger.error(f"Failed to fetch tools from local GitHub server: {e}")
+        return []
+
+    async def call_tool(self, name: str, arguments: dict) -> str:
+        session = await self._get_stdio_session()
+        if not session:
+            return "Error: Local GitHub MCP server is not running."
+
+        try:
+            logger.info(f"Calling GitHub stdio tool: {name}")
+            result = await session.call_tool(name, arguments=arguments)
+            output_texts = [c.text for c in result.content if hasattr(c, "text")]
+            return "\n".join(output_texts) if output_texts else "Success"
+        except Exception as e:
+            return f"Failed to execute GitHub tool locally: {e}"
 
 
 class ConnectorBroker:
@@ -401,11 +429,18 @@ class ConnectorBroker:
                                 access_token = data.get("access_token")
                                 
                                 if access_token:
+                                    # Verification Step (Fix 2)
+                                    is_valid = True
+                                    if app_id == "notion":
+                                        is_valid = await self.verify_notion_connection(access_token)
+                                    
+                                    if not is_valid:
+                                        logger.error(f"Connection verification failed for {app_id}")
+                                        return
+
                                     for r_app in self.registry:
                                         if r_app["id"] == app_id:
                                             r_app["connected"] = True
-                                            # All oauth apps store session_id for proxy token lookup.
-                                            # Only legacy api_key apps store the raw token in env.
                                             if r_app.get("auth_type") == "oauth":
                                                 r_app["session_id"] = session_id
                                             else:
@@ -428,6 +463,28 @@ class ConnectorBroker:
             
         asyncio.create_task(poll_for_tokens())
         return auth_url
+
+    async def verify_notion_connection(self, token: str) -> bool:
+        """Verifies if the Notion connection is actually valid (Fix 2)."""
+        try:
+            headers = {"Authorization": f"Bearer {token}"}
+            # Attempt to connect to the registry URL or standard placeholder
+            mcp_url = next((a["mcp_url"] for a in self.registry if a["id"] == "notion"), "https://mcp.notion.com/mcp")
+            
+            # Since we use REST proxy, we can also verify by simply calling Notion's /users/me
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://api.notion.com/v1/users/me", headers={
+                    "Authorization": f"Bearer {token}",
+                    "Notion-Version": "2022-06-28"
+                }) as resp:
+                    if resp.status == 200:
+                        user_data = await resp.json()
+                        logger.info(f"Notion API verified: Connected as {user_data.get('name')}")
+                        return True
+            return False
+        except Exception as e:
+            logger.error(f"Notion verification failed: {e}")
+            return False
 
     async def _get_session(self, app_id: str) -> Optional[ClientSession]:
         """Gets or creates an active ClientSession for the given app_id via SSE."""
