@@ -1071,6 +1071,11 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 from opendesk.utils.status_messages import get_status
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
+                # Fix: If taking a screenshot after an MCP tool, wait for UI to load
+                if tool_name == "take_screenshot" and i > 0:
+                    logger.info("Delaying screenshot for UI stabilization...")
+                    await asyncio.sleep(3)
+                
                 # Check if this is an MCP tool
                 mcp_app_id = None
                 for t in active_tools:

@@ -275,6 +275,54 @@ class GitHubConnector(BaseConnector):
             return f"Failed to execute GitHub tool locally: {e}"
 
 
+class NotionConnector(BaseConnector):
+    def __init__(self, broker: "ConnectorBroker"):
+        super().__init__("notion", broker)
+
+    async def get_app_tools(self) -> List[Tool]:
+        """Fetches Notion tools from the Render Proxy."""
+        proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
+        if not proxy_base:
+            return []
+        try:
+            async with aiohttp.ClientSession() as session_req:
+                url = f"{proxy_base}/mcp/notion/tools"
+                async with session_req.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        raw_tools = data.get("tools", [])
+                        return [Tool(t["name"], t["description"], t["inputSchema"]) for t in raw_tools]
+        except Exception as e:
+            logger.error(f"Failed to fetch Notion tools: {e}")
+        return []
+
+    async def call_tool(self, tool_name: str, params: dict) -> str:
+        """Executes Notion tools via Render Proxy and opens the app for verification."""
+        proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
+        session_id = self.broker.get_session_id("notion")
+        
+        try:
+            async with aiohttp.ClientSession() as session_req:
+                url = f"{proxy_base}/mcp/notion/call"
+                params_req = {"session_id": session_id}
+                async with session_req.post(url, params=params_req, json={"tool": tool_name, "args": params}) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        
+                        # Fix: If we just created a page, open Notion desktop app for the screenshot
+                        if tool_name == "notion_create_page":
+                            logger.info("Notion page created. Opening Notion app for verification...")
+                            import subprocess
+                            subprocess.Popen(['start', 'notion:'], shell=True)
+                            await asyncio.sleep(4) # Wait for app to pop up
+                            
+                        return str(result)
+                    else:
+                        return f"Error from proxy: {await resp.text()}"
+        except Exception as e:
+            logger.error(f"Failed to call Notion tool: {e}")
+            return f"Error: {e}"
+
 class ConnectorBroker:
     """
     Engine for managing external MCP Client connections using an Adapter pattern.
@@ -284,6 +332,7 @@ class ConnectorBroker:
         self.connectors: Dict[str, BaseConnector] = {}
         self._register_connector(SpotifyConnector(self))
         self._register_connector(GitHubConnector(self))
+        self._register_connector(NotionConnector(self))
         
         self.registry: List[Dict[str, Any]] = []
         self._load_registry()
@@ -467,23 +516,20 @@ class ConnectorBroker:
     async def verify_notion_connection(self, token: str) -> bool:
         """Verifies if the Notion connection is actually valid (Fix 2)."""
         try:
-            headers = {"Authorization": f"Bearer {token}"}
-            # Attempt to connect to the registry URL or standard placeholder
-            mcp_url = next((a["mcp_url"] for a in self.registry if a["id"] == "notion"), "https://mcp.notion.com/mcp")
-            
-            # Since we use REST proxy, we can also verify by simply calling Notion's /users/me
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://api.notion.com/v1/users/me", headers={
-                    "Authorization": f"Bearer {token}",
-                    "Notion-Version": "2022-06-28"
-                }) as resp:
-                    if resp.status == 200:
-                        user_data = await resp.json()
-                        logger.info(f"Notion API verified: Connected as {user_data.get('name')}")
-                        return True
+            # 1. Attempt REST verification first (Fastest/Reliable)
+            async with asyncio.timeout(10):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get("https://api.notion.com/v1/users/me", headers={
+                        "Authorization": f"Bearer {token}",
+                        "Notion-Version": "2022-06-28"
+                    }) as resp:
+                        if resp.status == 200:
+                            user_data = await resp.json()
+                            logger.info(f"Notion REST API verified: Connected as {user_data.get('name')}")
+                            return True
             return False
-        except Exception as e:
-            logger.error(f"Notion verification failed: {e}")
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.error(f"Notion verification failed or timed out: {e}")
             return False
 
     async def _get_session(self, app_id: str) -> Optional[ClientSession]:
@@ -552,8 +598,9 @@ class ConnectorBroker:
             ]
             
         # If the app is hosted on our Render proxy, use the REST MCP discovery
+        # NOTE: Notion is now handled by NotionConnector
         proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
-        if proxy_base and app_id in ["notion"]:
+        if proxy_base and app_id in ["gmail", "slack"]:
             try:
                 import aiohttp
                 async with aiohttp.ClientSession() as session_req:
@@ -590,8 +637,9 @@ class ConnectorBroker:
                 
         # For all MCP SSE apps (GitHub, Gmail, Notion, etc.) route through the live session.
         # If the app is hosted on our Render proxy, use the REST MCP call
+        # NOTE: Notion is now handled by NotionConnector
         proxy_base = os.getenv("OPENDESK_PROXY_URL", "").rstrip('/')
-        if proxy_base and app_id in ["notion"]:
+        if proxy_base and app_id in ["gmail", "slack"]:
             try:
                 session_id = self.get_session_id(app_id)
                 import aiohttp
