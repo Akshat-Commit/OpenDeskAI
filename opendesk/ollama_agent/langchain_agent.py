@@ -1071,6 +1071,11 @@ async def _execute(user_message: str, memory_history: str = "", status_callback:
                 from opendesk.utils.status_messages import get_status
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
+                # CRITICAL FIX: Global Boolean Coercion (Fixes infinite loops)
+                for k, v in tool_args.items():
+                    if isinstance(v, str) and v.lower() in ("true", "false", "yes", "no"):
+                        tool_args[k] = v.lower() in ("true", "yes")
+                
                 # Fix: If taking a screenshot after an MCP tool, wait for UI to load
                 if tool_name == "take_screenshot" and i > 0:
                     logger.info("Delaying screenshot for UI stabilization...")
