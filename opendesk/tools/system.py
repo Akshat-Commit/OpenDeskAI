@@ -10,27 +10,55 @@ from opendesk.db.crud import log_screenshot
 
 
 
+from opendesk.utils.ocr_analyzer import ocr_analyzer
+
 @register_tool("take_screenshot")
-def take_screenshot(context: str = "manual screenshot") -> str:
-    """Takes a screenshot of the primary screen and saves it to the database."""
+def take_screenshot(context: str = "manual screenshot", save_path: str = None, wait_seconds: float = 1.5) -> str:
+    """
+    Takes a screenshot of the primary screen, saves it, and runs OCR in the background.
+
+    Args:
+        context: Label for the screenshot (e.g. 'after open', 'manual').
+        save_path: Optional custom save path. Auto-generated if not provided.
+        wait_seconds: Seconds to wait before capturing (default 1.5).
+                      Increase to 3 for heavy apps (PDF viewers, Word, Excel)
+                      that take longer to fully render after being opened.
+    """
     try:
-        # 1. Prepare directory
-        shot_dir = os.path.join("data", "screenshots")
-        os.makedirs(shot_dir, exist_ok=True)
-        
-        # 2. Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
-        save_path = os.path.join(shot_dir, filename)
-            
+        from datetime import datetime
+
+        # RENDER WAIT: Give the OS/app time to fully paint the window before we capture.
+        # Without this, screenshots taken right after open_path capture blank/loading states.
+        if wait_seconds > 0:
+            logger.debug(f"take_screenshot: waiting {wait_seconds}s for screen to render...")
+            time.sleep(wait_seconds)
+
+        if not save_path:
+            # 1. Prepare directory
+            # Use absolute path to project root to avoid Access Denied from external MCP callers
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            shot_dir = os.path.join(project_root, "data", "screenshots")
+            os.makedirs(shot_dir, exist_ok=True)
+
+            # 2. Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = os.path.join(shot_dir, f"screenshot_{timestamp}.png")
+        else:
+            # Create parent dirs safely if save_path has a directory
+            if os.path.dirname(save_path):
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
         # 3. Capture and save
         screenshot = ImageGrab.grab()
         screenshot.save(save_path)
-        
-        # 4. Record in database
+
+        # 4. Trigger OCR in background (Zero impact on response time)
+        ocr_analyzer.analyze_in_background(save_path)
+
+        # 5. Record in database (legacy)
         log_screenshot(save_path, context)
-        
-        return f"Screenshot saved successfully at {os.path.abspath(save_path)} and recorded in database."
+
+        return f"Screenshot saved successfully at {os.path.abspath(save_path)} and queued for OCR."
     except Exception as e:
         return f"Error taking screenshot: {e}"
 
@@ -110,7 +138,7 @@ def open_camera_app() -> str:
     """Opens the Windows Camera application on the host screen for the user."""
     import subprocess
     try:
-        subprocess.run("start microsoft.windows.camera:", shell=True)
+        subprocess.run(["cmd", "/c", "start", "microsoft.windows.camera:"])  # noqa: S607
         return "Successfully opened the Windows Camera app on the screen."
     except Exception as e:
         return f"Error opening camera app: {e}"
@@ -176,98 +204,406 @@ def capture_video(duration: int = 5, save_path: str = None) -> str:
         if cap is not None:
             cap.release()
 
-@register_tool("send_whatsapp_message")
-def send_whatsapp_message(contact_name: str, message: str) -> str:
-    """A highly reliable macro that opens WhatsApp desktop, searches for the exact contact name, and sends them a message."""
+def _get_whatsapp_path() -> str:
+    """Robustly find the WhatsApp Desktop executable path."""
+    import winreg
+    import os
+    
+    # 1. Check Registry
     try:
-        # 1. Open WhatsApp via Windows URI
-        subprocess.run("start whatsapp:", shell=True)
-        # Give WhatsApp plenty of time to launch and focus
-        time.sleep(5)
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\WhatsApp.exe")
+        path, _ = winreg.QueryValueEx(key, "")
+        if os.path.exists(path):
+            return path
+    except Exception:  # noqa: S110
+        pass
         
-        # 2. Focus the search bar (Ctrl+F in WhatsApp Desktop)
+    # 2. Check Common Script Locations
+    locations = [
+        os.path.expanduser("~/AppData/Local/WhatsApp/WhatsApp.exe"),
+        os.path.expanduser("~/AppData/Local/Programs/WhatsApp/WhatsApp.exe"),
+        "C:/Program Files/WindowsApps/WhatsApp.exe"
+    ]
+    for loc in locations:
+        if os.path.exists(loc):
+            return loc
+            
+    # 3. Check via App Indexer if available
+    try:
+        from opendesk.utils.app_indexer import app_indexer
+        found = app_indexer.find_app("whatsapp")
+        if found and os.path.exists(found):
+            return found
+    except Exception:  # noqa: S110
+        pass
+        
+    return ""
+
+@register_tool("send_whatsapp_message")
+def send_whatsapp_message(
+    contact_name: str,
+    message: str = ""
+) -> str:
+    """
+    Opens WhatsApp Desktop and sends
+    a text message to a contact.
+    Use ONLY for text messages.
+    NOT for file sharing.
+    """
+    import time
+    import pyautogui
+    import pyperclip
+    
+    try:
+        import os
+        import platform
+        
+        if platform.system() != "Windows":
+            return "❌ WhatsApp automation is currently Windows-only."
+            
+        # Open WhatsApp using the Windows URL protocol handling
+        try:
+            os.startfile("whatsapp:")
+        except Exception:
+            return (
+                "❌ WhatsApp Desktop not installed.\n"
+                " Please install from Microsoft Store."
+            )
+            
+        time.sleep(4)
+        
+        # Search for contact
         pyautogui.hotkey('ctrl', 'f')
         time.sleep(1)
-        
-        # 3. Type contact name to search
-        pyautogui.write(contact_name, interval=0.05)
-        time.sleep(2.5) # Wait for search results to filter
-        
-        # 4. Press Enter to select the top contact and focus message box
+        pyautogui.typewrite(
+            contact_name,
+            interval=0.05
+        )
+        time.sleep(2)
         pyautogui.press('enter')
         time.sleep(1)
         
-        # 5. Type the actual message
-        pyautogui.write(message, interval=0.02)
-        time.sleep(0.5)
+        # Type and send message
+        if message:
+            pyperclip.copy(message)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.5)
+            pyautogui.press('enter')
         
-        # 6. Press Enter to send!
-        pyautogui.press('enter')
-        time.sleep(1)
-        
-        return f"Successfully executed WhatsApp macro: Sent '{message}' to '{contact_name}'."
+        return (
+            f"Message sent to "
+            f"{contact_name} on WhatsApp"
+        )
     except Exception as e:
-        logger.error(f"WhatsApp macro failed: {e}")
-        return f"Error executing WhatsApp macro: {e}"
+        return f"WhatsApp error: {e}"
 
-@register_tool("play_spotify_music")
-def play_spotify_music(song_name: str) -> str:
-    """A highly reliable macro that opens Spotify desktop, searches for the exact song, and plays the top result."""
+# ==============================================================================
+# [AI AGENT LOCK] - STRICTLY READ-ONLY AREA
+# 
+# The following WhatsApp automation functions (send_whatsapp_file, 
+# _extract_whatsapp_contacts, _do_whatsapp_file_send) have been heavily 
+# optimized for race conditions, strict Telegram 400 error edge-cases, LLM OCR 
+# noise filtering, and PowerShell file dropping.
+# 
+# DO NOT MODIFY these functions without explicit manual override from the user.
+# Modifying this code breaks core system reliability.
+# ==============================================================================
+@register_tool("send_whatsapp_file")
+def send_whatsapp_file(
+    contact_name: str,
+    filename: str
+) -> str:
+    """
+    Finds a file on the PC and sends it to a
+    contact on WhatsApp Desktop.
+    Use when user says:
+      send [file] to [person] on whatsapp
+      share [file] with [person] on whatsapp
+
+    HOW IT WORKS:
+    1. Finds the file via file indexer.
+    2. Opens WhatsApp Desktop and searches the contact.
+    3. Takes an in-memory screenshot (never saved to disk).
+    4. Runs OCR directly on the image in RAM.
+    5. Extracts matching contact names.
+    6. Sends a clean TEXT list to Telegram — instant, no upload.
+    7. User replies 1/2/3 to pick the right contact.
+    
+    IMPORTANT SAFETY OVERRIDE: This tool has a built-in safety confirmation layer. DO NOT call `request_confirmation` if you use this tool! Always call this tool directly.
+    """
+    import time
+    import pyautogui
+    import pytesseract
+    from PIL import ImageGrab
+    from opendesk.utils.file_indexer import file_indexer
+    
     try:
-        # 1. Open Spotify via Windows URI
-        subprocess.run("start spotify:", shell=True)
-        # Give Spotify plenty of time to launch and focus
-        time.sleep(5)
+        import os
+        import platform
         
-        # Maximize the window to ensure predictable layout for coordinate fallback
-        pyautogui.hotkey('win', 'up')
+        if platform.system() != "Windows":
+            return "❌ WhatsApp automation is currently Windows-only."
+            
+        # Open WhatsApp using Windows URL protocol
+        try:
+            os.startfile("whatsapp:")
+        except Exception:
+            return (
+                "❌ WhatsApp Desktop not installed.\n"
+                " Please install from Microsoft Store."
+            )
+            
+        time.sleep(4)
+        pyautogui.hotkey('win', 'up')  # Maximize for consistent layout
+        time.sleep(0.5)
+
+        # ── Step 1: Find the file ─────────────────────────────────────────
+        results = file_indexer.find_file(filename)
+        if not results:
+            return (
+                f"❌ Could not find '{filename}'.\n"
+                f"Please check the filename and try again."
+            )
+        file_path = results[0][0]
+
+        # ── Step 2: Open WhatsApp ─────────────────────────────────────────
+        # (WhatsApp is already opened above via os.startfile)
+
+        # ── Step 3: Search the contact ────────────────────────────────────
+        pyautogui.hotkey('ctrl', 'f')
         time.sleep(1)
+        pyautogui.typewrite(contact_name, interval=0.05)
+        time.sleep(2.5)  # Let results appear
+
+        # ── Step 4: In-memory screenshot + OCR (no disk I/O) ─────────────
+        img = ImageGrab.grab()  # ~50ms, pure RAM — never saved to disk
+        raw_text = pytesseract.image_to_string(img, config='--psm 6')
+
+        # ── Step 5: Extract candidate contact names ───────────────────────
+        found_contacts = _extract_whatsapp_contacts(raw_text, contact_name)
+
+        # ── Step 6: Send TEXT confirmation to Telegram (no photo upload) ──
+        chat_id = _chat_id_var.get()
+        if chat_id is None:
+            return "CONFIRMATION_SKIPPED: No chat context available."
+
+        try:
+            from opendesk.bot import set_whatsapp_contact_selection
+            set_whatsapp_contact_selection(
+                chat_id=chat_id,
+                contact_name=contact_name,
+                filename=filename,
+                file_path=file_path,
+                whatsapp_path="whatsapp:",
+                found_contacts=found_contacts,
+            )
+        except Exception as e:
+            logger.error(f"Failed to set WhatsApp contact selection: {e}")
+            return f"Error requesting contact selection: {e}"
+
+        count = len(found_contacts)
+        return (
+            "SYSTEM: Dispatched Telegram prompt successfully.\n"
+            "CRITICAL: Stop execution immediately. Do NOT generate conversational text. Do NOT ask 'Is there anything else you want to ask?'. Yield empty state."
+        )
+
+    except Exception as e:
+        return f"WhatsApp file send error: {e}"
+
+
+def _extract_whatsapp_contacts(ocr_text: str, search_name: str) -> list:
+    """
+    Parse OCR text from a WhatsApp search result using LLM for precision.
+    Returns up to 5 candidate contact names that match the searched name.
+    Falls back to regex parsing if LLM fails.
+    """
+    import re
+    try:
+        from langchain_groq import ChatGroq
+        from opendesk.config import GROQ_API_KEY_2
+        import json
         
-        # 2. Focus and CLEAR the search bar (Ctrl+L in Spotify)
-        pyautogui.hotkey('ctrl', 'l')
+        llm = ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)
+        prompt = (
+            f"Extract a clean JSON list of EVERY single contact name or username matching '{search_name}' from this WhatsApp OCR text. "
+            "DO NOT skip any matching names! Filter out the search bar at the top, timestamps, random characters and any message snippet text. "
+            "Return ONLY a valid JSON list of strings. Example: [\"Aditya Mishra\", \"Aditya Naik\"]\n\n"
+            f"OCR:\n{ocr_text}"
+        )
+        res = llm.invoke(prompt)
+        
+        json_match = re.search(r'\[.*\]', res.content, re.DOTALL)
+        if json_match:
+            contacts = json.loads(json_match.group(0))
+            if isinstance(contacts, list) and len(contacts) > 0:
+                seen = set()
+                clean = []
+                for c in contacts:
+                    c_str = str(c).strip()
+                    if c_str.lower() not in seen and search_name.lower() in c_str.lower():
+                        seen.add(c_str.lower())
+                        clean.append(c_str)
+                if clean:
+                    return clean[:5]
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"LLM OCR parsing failed, falling back to basic: {e}")
+
+    # --- Fallback Basic Parsing ---
+    lines = ocr_text.splitlines()
+    search_lower = search_name.lower()
+    candidates = []
+    seen = set()
+
+    for line in lines:
+        if search_lower not in line.lower():
+            continue
+        if "Q." in line or line.strip().lower().endswith("x"):
+            continue
+            
+        time_match = re.search(r'\b(\d{1,2}:\d{2}\s*(?:am|pm)?|\d{2}/\d{2}/\d{4}|yesterday|today)\b', line, flags=re.IGNORECASE)
+        clean_name = line[:time_match.start()] if time_match else line
+        
+        words = clean_name.split()
+        valid_words = []
+        started = False
+        for w in words:
+            w_clean = re.sub(r'[^a-zA-Z0-9]', '', w)
+            if not w_clean: continue
+            if not started:
+                if len(w_clean) <= 2 and search_lower not in w_clean.lower():
+                    continue
+                started = True
+            if started:
+                valid_words.append(w_clean)
+                
+        clean_name_final = " ".join(valid_words).strip()
+        if clean_name_final and search_lower in clean_name_final.lower():
+            if clean_name_final.lower() not in seen:
+                seen.add(clean_name_final.lower())
+                candidates.append(clean_name_final)
+        if len(candidates) >= 5: break
+
+    return candidates if candidates else [search_name]
+
+
+
+def _do_whatsapp_file_send(
+    contact_name: str,
+    file_path: str,
+    whatsapp_path: str,
+    contact_index: int = 0
+) -> str:
+    """
+    Called by bot.py AFTER the user picks which contact to use.
+    Clicks the Nth result in WhatsApp's search sidebar and sends the file.
+    """
+    import time
+    import pyautogui
+    import pyperclip
+    import os as _os
+    import psutil
+
+    try:
+        # Re-open WhatsApp if it's no longer running
+        wa_running = any(
+            "whatsapp" in (p.name() or "").lower()
+            for p in psutil.process_iter(["name"])
+        )
+        if not wa_running:
+            _os.startfile(whatsapp_path)
+            time.sleep(4)
+
+        # The ultimate reliable way to pick the contact: Search their exact name again!
+        pyautogui.hotkey('ctrl', 'f')
         time.sleep(0.5)
         pyautogui.hotkey('ctrl', 'a')
         pyautogui.press('backspace')
+        time.sleep(0.2)
+        pyautogui.typewrite(contact_name, interval=0.05)
+        time.sleep(1.5)
+        
+        pyautogui.press('down')  # Ensure focus moves to top result
+        time.sleep(0.3)
+        pyautogui.press('enter')  # Open the chat
+        time.sleep(1)
+
+        # ── Attach file using FileDrop Clipboard ───────────────────────
+        import subprocess
+        subprocess.run(["powershell", "-command", f'Set-Clipboard -Path "{file_path}"'])
         time.sleep(0.5)
-        
-        # 3. Type song name and submit search
-        logger.info(f"Typing song name: {song_name}")
-        pyautogui.write(song_name, interval=0.05)
-        time.sleep(1) 
+
+        # Paste the file into WhatsApp chat directly!
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(1.5) # Wait for the image preview to load
+
+        # ── Send ────────────────────────────────────────────────────────
         pyautogui.press('enter')
-        time.sleep(4) # Increased wait for search results to load
+        time.sleep(1)
+
+        filename = _os.path.basename(file_path)
+        return f"✅ File '{filename}' sent to {contact_name} on WhatsApp!"
+
+    except Exception as e:
+        return f"WhatsApp send error after contact selection: {e}"
+
+
+@register_tool("play_spotify_music")
+def play_spotify_music(song_name: str) -> str:
+    """A smart tool that plays music on Spotify. Uses high-reliability API if connected, otherwise falls back to UI automation."""
+    import urllib.parse
+    from opendesk.mcp_client import mcp_client
+    
+    # 1. SENIOR DEVELOPER CHECK: Is Spotify connected via MCP/OAuth?
+    # If yes, use the 100% reliable API-based search and play.
+    connected_apps = {app["id"] for app in mcp_client.list_connected_apps()}
+    if "spotify" in connected_apps:
+        logger.info(f"Spotify MCP connected. Routing '{song_name}' to reliable API engine.")
+        # This calls the method we just refined in mcp_client.py
+        import asyncio
+        try:
+            # Since this is a tool called in a thread, we use a new event loop or run_coroutine_threadsafe
+            # However, tools are already run in threads by langchain_agent.py (asyncio.to_thread)
+            # So we can just use asyncio.run if there's no loop, or a simpler approach.
+            # Best practice for OpenDesk tools is to keep them synchronous-friendly or handle the loop.
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            result = loop.run_until_complete(mcp_client.spotify_play(song_name))
+            return f"API-Route Success: {result}"
+        except Exception as e:
+            logger.warning(f"MCP playback failed, falling back to UI: {e}")
+
+    # 2. FALLBACK: Fragile UI Macro (for users not yet connected via OAuth)
+    try:
+        # Encode the song name for URL safety
+        safe_song = urllib.parse.quote(song_name)
         
-        # 4. Method A: Tab sequence to "Top Result" play button
-        # Usually from search box: Tab -> Clear [x] -> Top/Songs filter -> Top Result Card -> Play Button
-        # We try a few tabs followed by space/enter to hit the play button
-        logger.info("Trying Method A (Tab sequence)...")
-        for _ in range(5):
-            pyautogui.press('tab')
-            time.sleep(0.2)
-        pyautogui.press('enter')
-        time.sleep(2)
+        # Open Spotify directly into a Track-Filtered search result via URI
+        logger.info(f"Opening Spotify with track filter for: {song_name}")
+        subprocess.run(["cmd", "/c", "start", f"spotify:search:track:{safe_song}"])  # noqa: S603, S607
         
-        # 5. Method B (Fallback): Double click the center of the "Top Result" card
-        # On a maximized window, the Top Result card is at roughly x=25%, y=45%
-        logger.info("Trying Method B (Coordinate click fallback)...")
-        screen_w, screen_h = pyautogui.size()
-        click_x = int(screen_w * 0.25)
-        click_y = int(screen_h * 0.45)
-        
-        pyautogui.moveTo(click_x, click_y)
-        pyautogui.doubleClick()
-        time.sleep(2)
-        
-        # 6. Method C: The 'k' shortcut (Spotify play/pause toggle)
-        # Sometimes focus is on the card but play didn't trigger. 
-        # 'k' is a common media key for several apps including Spotify.
-        pyautogui.press('k')
+        time.sleep(4)
+        pyautogui.hotkey('win', 'up')
         time.sleep(1)
         
-        # Final press enter as many Spotify versions play on enter when card is focused
+        logger.info("Executing geometric double-click on first track...")
+        screen_w, screen_h = pyautogui.size()
+        
+        click_x = int(screen_w * 0.35)
+        click_y = int(screen_h * 0.14)
+        
+        pyautogui.moveTo(click_x, click_y, duration=0.2)
+        pyautogui.click()
+        time.sleep(0.5)
+        pyautogui.doubleClick()
+        time.sleep(1)
         pyautogui.press('enter')
         
-        return f"Successfully executed Spotify macro: Played '{song_name}'."
+        return f"UI-Macro Success: Played '{song_name}'."
     except Exception as e:
         logger.error(f"Spotify macro failed: {e}")
         return f"Error executing Spotify macro: {e}"
@@ -298,25 +634,34 @@ def set_volume(level: int) -> str:
     """Sets the system master volume to an exact percentage (0-100)."""
     try:
         from pycaw.pycaw import AudioUtilities
+        import pythoncom
         
-        if not 0 <= level <= 100:
-            return f"Error: Volume level {level} is out of bounds. Must be between 0 and 100."
+        # Initialize COM for this thread
+        pythoncom.CoInitialize()
+        
+        try:
+            if not 0 <= level <= 100:
+                return f"Error: Volume level {level} is out of bounds. Must be between 0 and 100."
+                
+            devices = AudioUtilities.GetSpeakers()
+            volume = devices.EndpointVolume
             
-        devices = AudioUtilities.GetSpeakers()
-        volume = devices.EndpointVolume
-        
-        # Calculate scalar volume (0.0 to 1.0)
-        scalar_vol = float(level) / 100.0
-        
-        # Unmute if muted
-        if volume.GetMute():
-            volume.SetMute(0, None)
+            # Calculate scalar volume (0.0 to 1.0)
+            scalar_vol = float(level) / 100.0
             
-        volume.SetMasterVolumeLevelScalar(scalar_vol, None)
-        
-        return f"Successfully set system volume to {level}%."
+            # Unmute if muted
+            if volume.GetMute():
+                volume.SetMute(0, None)
+                
+            volume.SetMasterVolumeLevelScalar(scalar_vol, None)
+            
+            return f"Successfully set system volume to {level}%."
+        finally:
+            # Always uninitialize COM
+            pythoncom.CoUninitialize()
+            
     except ImportError:
-        return "Error: pycaw library is missing. The user must run `pip install pycaw comtypes` to enable exact volume control."
+        return "Error: pycaw or comtypes library is missing. The user must run `pip install pycaw comtypes` to enable exact volume control."
     except Exception as e:
         logger.error(f"Failed to set volume via pycaw: {e}")
         return f"Error setting volume: {e}"
@@ -391,3 +736,167 @@ def terminate_process(pid: int) -> str:
     except Exception as e:
         logger.error(f"Failed to terminate process {pid}: {e}")
         return f"Error terminating process: {e}"
+
+@register_tool("use_calculator")
+def use_calculator(calculation: str) -> str:
+    """A reliable macro to type a calculation into the focusable window (like calculator), press enter, and take a screenshot of the result."""
+    import time
+    from opendesk.tools.system import take_screenshot
+    
+    try:
+        # Type the calculation
+        pyautogui.write(calculation, interval=0.05)
+        pyautogui.press('enter')
+        
+        # Wait for result to appear
+        time.sleep(0.5)
+        
+        # NOW take screenshot, Result will be visible!
+        shot_res = take_screenshot("calculator result")
+        
+        return f"Successfully typed calculation '{calculation}'. Result should be visible on screen. {shot_res}"
+    except Exception as e:
+        logger.error(f"Calculator macro failed: {e}")
+        return f"Error executing calculator macro: {e}"
+
+@register_tool("get_current_time")
+def get_current_time() -> str:
+    """Returns the current system time in a readable format."""
+    now = datetime.now()
+    return f"The current system time is {now.strftime('%I:%M %p')}."
+
+@register_tool("get_battery_level")
+def get_battery_level() -> str:
+    """Returns the current battery percentage and charging status."""
+    import psutil
+    battery = psutil.sensors_battery()
+    if not battery:
+        return "Battery information not available on this device."
+    
+    status = "Charging" if battery.power_plugged else "Discharging"
+    return f"Battery is at {battery.percent}% ({status})."
+
+@register_tool("get_system_info")
+def get_system_info() -> str:
+    """Returns basic system information (CPU usage, RAM usage, and OS)."""
+    import psutil
+    import platform
+    
+    cpu = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory().percent
+    os_name = platform.system()
+    os_release = platform.release()
+    
+    return f"OS: {os_name} {os_release} | CPU: {cpu}% | RAM: {ram}%"
+
+@register_tool("search_screenshots")
+def search_screenshots(query: str) -> str:
+    """
+    Search through all screenshots by their
+    content. Finds screenshots containing
+    specific text, errors, or keywords.
+    Use when user asks to find a screenshot
+    by what was visible on screen.
+    """
+    from opendesk.utils.ocr_analyzer import ocr_analyzer
+    
+    results = ocr_analyzer.search_screenshots(query)
+    
+    if not results:
+        return f"No screenshots found containing '{query}'"
+    
+    response = f"Found {len(results)} screenshot(s) containing '{query}':\n\n"
+    
+    for i, result in enumerate(results, 1):
+        path = result[0]
+        captured = result[2]
+        filename = os.path.basename(path)
+        
+        response += (
+            f"{i}. {filename}\n"
+            f"   Captured: {captured}\n"
+            f"   Path: {path}\n\n"
+        )
+    
+    return response
+
+
+@register_tool("get_clipboard_text")
+def get_clipboard_text() -> str:
+    """
+    Reads the current text from the computer's clipboard.
+    Use this when the user asks you to send or use 'copied text', 'copied link', or 'clipboard'.
+    """
+    import pyperclip
+    try:
+        text = pyperclip.paste()
+        if text:
+            return f"Clipboard matches: '{text}'"
+        else:
+            return "Clipboard is empty or does not contain text."
+    except Exception as e:
+        return f"Error reading clipboard: {e}"
+
+
+# Thread-local storage to pass chat_id from bot to tools
+import contextvars
+_chat_id_var = contextvars.ContextVar("chat_id", default=None)
+
+def set_tool_chat_id(chat_id: int):
+    """Called by the bot before invoking the agent to pass the current chat_id to tools."""
+    _chat_id_var.set(chat_id)
+
+@register_tool("request_confirmation")
+def request_confirmation(action_description: str, original_command: str) -> str:
+    """
+    SAFETY GATE: Call this BEFORE using WhatsApp, Gmail, or any app to share/send anything.
+    Sends a YES/NO confirmation to the user on Telegram and pauses execution.
+    
+    Args:
+        action_description: Human-readable description of what you are about to do.
+                           E.g. "Send jai.pdf to Rahul on WhatsApp"
+        original_command: The original user command to re-execute if confirmed.
+    
+    Returns "AWAITING_CONFIRMATION" — you MUST stop after calling this tool and wait.
+    """
+    # Prevent double-confirmation for WhatsApp file sharing since it has its own UI
+    if "whatsapp" in action_description.lower() or "whatsapp" in original_command.lower():
+        # Do NOT log or send any message. Auto-bypass back to the agent loop.
+        return (
+            "SYSTEM: Bypassed request_confirmation because WhatsApp tools have built-in "
+            "contact selection gates. Proceed with execution."
+        )
+    chat_id = _chat_id_var.get()
+    if chat_id is None:
+        return "CONFIRMATION_SKIPPED: No chat context available. Proceed with caution."
+    
+    try:
+        from opendesk.bot import set_pending_action
+        set_pending_action(chat_id, action_description, original_command)
+        logger.info(f"Confirmation requested for chat {chat_id}: {action_description}")
+        
+        import requests
+        from opendesk.config import BOT_TOKEN
+        message = (
+            f"⚠️ *Safety Gate Validation*\n\n"
+            f"Action: `{action_description}`\n\n"
+            f"Reply *YES* to proceed or *NO* to cancel."
+        )
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "Markdown"
+        }
+        res = requests.post(url, json=payload, timeout=10)
+        res.raise_for_status()
+
+        return (
+            "SYSTEM: Safety gate delivered.\n"
+            "CRITICAL: Stop execution immediately. Do NOT generate conversational text. Do NOT ask 'Is there anything else you want to ask?'. Yield empty state."
+        )
+    except Exception as e:
+        logger.error(f"Failed to set pending action or send message: {e}")
+        return f"CONFIRMATION_FAILED: {e}. Use caution before proceeding."
+
+

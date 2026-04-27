@@ -179,8 +179,9 @@ def test_command(command, expected_tool, description, level):
     print(f"     Command: \033[93m\"{command}\"\033[0m")
 
     start_time = time.time()
+    is_error = False
+    response_text = None
     try:
-        is_error = False
         response_text, attachments = call_agent(command)
         elapsed = round(float(time.time() - start_time), 2)
         if response_text and isinstance(response_text, str):
@@ -223,6 +224,7 @@ def test_command(command, expected_tool, description, level):
             return False
 
     except Exception as e:
+        is_error = True
         elapsed = round(float(time.time() - start_time), 2)
         result_entry = {
             "level": level,
@@ -239,9 +241,14 @@ def test_command(command, expected_tool, description, level):
         print(f"     \033[91m💥 ERROR\033[0m ({elapsed}s)")
         print(f"     {str(e)[:200]}")
         
-    # ANTI-RATE LIMIT PAUSE
-    print("     \033[90m⏳ Waiting 35s to prevent API rate limits...\033[0m")
-    time.sleep(35)
+    # ANTI-RATE LIMIT PAUSE (Only needed for cloud APIs)
+    from opendesk.config import USER_MODE
+    if USER_MODE == "local":
+        print("     \033[90m⚡ Local mode: Skipping hard rate limit pause...\033[0m")
+        time.sleep(5) # Let the GPU breathe
+    else:
+        print("     \033[90m⏳ Waiting 15s to prevent API rate limits...\033[0m")
+        time.sleep(15)
     
     return not is_error and response_text
 

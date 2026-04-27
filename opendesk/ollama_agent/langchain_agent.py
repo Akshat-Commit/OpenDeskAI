@@ -4,16 +4,18 @@ import os
 import re
 import json
 import time
+import asyncio
+from typing import Optional, Callable
 
 from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
-from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GEMINI_API_KEY, GROQ_API_KEY_1, GROQ_API_KEY_2, GITHUB_API_KEY  # type: ignore
+from opendesk.config import OLLAMA_HOST, OLLAMA_MODEL_NAME, OLLAMA_VISION_MODEL_NAME, GROQ_API_KEY_1, GROQ_API_KEY_2, GROQ_API_KEY_3, GITHUB_API_KEY  # type: ignore
 from opendesk.tools.registry import _TOOLS  # type: ignore
 from opendesk.tools.schemas import TOOL_SCHEMAS
-from opendesk.ollama_agent.memory_agent import memory_agent
+
 from opendesk.ollama_agent.judge_agent import judge_agent
 
 
@@ -50,15 +52,262 @@ CORE RULES:
 1. TOOL CALLING: You have native tools. Call them directly using your internal tool-use capability. 
    - NEVER output tags like <function=...> or XML-style calls. 
    - NEVER explain your tool usage. Just call the tool.
+   - MULTI-STEP TASKS: If a command requires multiple actions (e.g. "read PDF and create a Word doc"), you MUST complete ALL steps in sequence. Do NOT stop after the first tool. Keep calling tools until every step is done.
+     Example 1: "Read document.pdf, summarise in 5 points, save as summary.docx"
+       -> Step 1: read_and_summarize(filename='document.pdf')
+       -> Step 2: create_word_doc(content='...5 point summary...', filepath='summary.docx')
+       -> ONLY respond to the user AFTER both tools are done.
+     Example 2: "Check downloads, find most recent file, open it, take screenshot"
+       -> Step 1: find_latest_file(file_type='all', folder='downloads')
+          [The result contains a line starting with EXACT_PATH -- use that value as-is in the next step]
+       -> Step 2: open_path(path='<paste the EXACT_PATH value here, do NOT use a placeholder>')
+       -> Step 3: take_screenshot()
+       -> CRITICAL: NEVER pass placeholder strings like 'path_to_file'. ALWAYS use the real path returned.
 2. PERSONA: Be professional, friendly, and helpful. 
-   - Start with: "Hey! OpenDesk here! How can I help?"
-   - Do NOT mention system stats (CPU/RAM) unless specifically asked.
-3. FILE SHARING: Use `share_file` to find and send files. 
-   - When successful, output exactly: "Shared with you."
-4. MACROS: Tools like `play_spotify_music` and `send_whatsapp_message` are macro-based. 
+    - If it's a completely new conversation, you may greet warmly. Otherwise, just converse naturally without saying "Hey! OpenDesk here!" every time.
+    - Do NOT mention system stats (CPU/RAM) unless specifically asked.
+    - ENCOURAGEMENT: After successfully fulfilling a specific task or answering a non-trivial query, append a varied, friendly follow-up question (e.g., "Is there anything else you want to ask?", "What's next?", "How else can I help?"). 
+    - AVOID the encouragement suffix for simple greetings, introductions, or casual chit-chat.
+    - NEVER add the encouragement suffix if you are calling a tool that pauses for user input (e.g. `send_whatsapp_file`, `request_confirmation`). Just stay completely silent or say "Please check your screen."
+3. FILE OPERATIONS RULES:
+   - FORMATTING RULE: If the user asks to "create a file" for notes, summaries, or structured text and does NOT specify an extension, ALWAYS default to a `.docx` file (e.g., `create_word_doc` tool) so that bolding and bullets render beautifully.
+   - When user asks for the latest/recent/newest file: Use find_latest_file tool. NEVER use finduserfile.
+   - When user asks where a file is by name: Use find_file_location tool. Do not manually search paths.
+   - When user asks to summarize the latest file: 
+       -> Step 1: Use find_latest_file tool to get the path.
+       -> Step 2: Pass that path to the read_and_summarize tool directly. Do NOT use share_file for this.
+   - When user asks to share/send file: Use share_file tool. It automatically searches everywhere including OneDrive Japanese folders.
+   - NEVER use the hallucinated 'finduserfile' tool. It does not exist.
+   - NEVER say file not found without trying file index tools first!
+   - SCREENSHOT SHARING RULE — HIGHEST PRIORITY: If you have JUST called take_screenshot in this execution (i.e. take_screenshot appears in your tool calls above), its result message contains the EXACT saved filename, e.g.:
+       "File saved successfully at C:\...\screenshot_20260422_000532.png"
+     → You MUST use that EXACT filename when calling share_file next.
+     → NEVER use a filename from conversation history when you just took a fresh screenshot.
+     → The filename from memory history is STALE — the fresh screenshot overwrites it.
+     Example: take_screenshot returns "saved at .../screenshot_20260422_000532.png"
+       → share_file(filename='screenshot_20260422_000532.png')   ← CORRECT
+       → share_file(filename='screenshot_20260420_010230.png')   ← WRONG — stale from history
+   - SCREENSHOT RENDER RULE: When you call take_screenshot immediately after open_path or open_application,
+     the app may not have fully loaded yet. ALWAYS pass wait_seconds=3 in this case so the window has time to render:
+       → open_path(path='...') → take_screenshot(wait_seconds=3)   ← CORRECT for docs/PDFs/Office files
+       → take_screenshot()                                          ← ONLY for manual screenshots with no prior open
+   - CONVERSATION MEMORY RULE: The conversation history may contain lines like:
+       [FILES CREATED THIS TURN]: screenshot_20260420_010230.png (path: C:\...\screenshot_20260420_010230.png)
+     This rule ONLY applies when the user asks to RE-SEND a file WITHOUT having just taken a new screenshot.
+     If you just called take_screenshot → ignore this memory rule, use the fresh filename instead.
+   - FILE FILTER RULE — VERY IMPORTANT: When user asks to find files by TYPE + TIME (e.g. "find all pdf files modified this week", "which docx files did I edit today", "show me images from this month"):
+       -> ALWAYS call find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
+       -> NEVER use list_directory for this — it lists everything without filtering.
+       -> Supported time_filter values: 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month'
+       -> Supported folder values: 'downloads', 'documents', 'desktop', 'pictures', 'all'
+   - File filter example: 'find all pdf files modified this week' -> find_files_by_filter(file_type='pdf', time_filter='this week', folder='all')
+   - EXACT PATH RULE: When find_file_location or find_latest_file returns a line saying EXACT_PATH: <path>, you MUST use that exact string as the argument for open_path or read_and_summarize. NEVER substitute a placeholder.
+   - OPEN FOLDER RULE: open_path accepts folder aliases like 'downloads', 'desktop', 'documents' as well as full paths.
+   - list_directory only shows the first 25 items. It is NOT suitable for finding a specific file — use find_file_location, find_latest_file, or find_files_by_filter for that.
+4. WHATSAPP RULES:
+   - For text messages: Use `send_whatsapp_message` tool.
+   - For file sharing via WhatsApp: Use `send_whatsapp_file` tool.
+   - NEVER use `search_and_confirm_whatsapp_share` (DELETED).
+   - NEVER use `share_file` for WhatsApp tasks.
+   Example: 'Send hi to Aditya' -> send_whatsapp_message(contact_name='Aditya', message='hi')
+5. CONFIRMATION GATE: For Gmail or other non-WhatsApp apps, call `request_confirmation` before sending. Stop and wait for user reply.
+   - If command starts with [USER CONFIRMED] -> proceed.
+6. MACROS: Tools like `play_spotify_music` and `send_whatsapp_message` are macro-based. 
    - Ensure the app is focused before calling.
    - If a macro fails, do NOT claim success. Describe what you saw on the screen.
-5. ARCHITECTURE: Use native tools (Wait, Spotify, Volume) first. Use `open_app` for settings/apps. Use `take_screenshot` before clicking UI elements."""
+7. ARCHITECTURE: Use native tools (Wait, Spotify, Volume) first. Use `open_app` for settings/apps. Use `take_screenshot` before clicking UI elements.
+8. CONVERSATIONAL RECOVERY: If the user's intent is unclear, the file is not found, or you do not have a tool to fulfill the request, DO NOT pretend to execute a tool and DO NOT silently fail. Instead, act authentically as humans do. Ask 1 short, intelligent clarifying question to figure out exactly what the user wants.
+9. WEB SEARCH: If you are asked about the latest news, current prices, weather, or lack offline knowledge to answer a question, you MUST automatically use the `search_web` tool to find the answer.
+
+BROWSER RULES - VERY IMPORTANT:
+You CAN and MUST control the browser! You have full access to the laptop!
+- When user says search youtube for X:
+  → ALWAYS call search_web(query='X', open_in_browser=True, platform='youtube')
+- When user says google something:
+  → ALWAYS call search_web(query='something', open_in_browser=True, platform='google')
+- When user says open website:
+  → ALWAYS call read_webpage tool or open_application('chrome')
+NEVER say you cannot do these things! NEVER refuse browser commands! NEVER suggest user to do it manually! YOU control the laptop - just do it!
+Examples:
+'search youtube for lofi' → search_web(query='lofi music', open_in_browser=True, platform='youtube')
+'google latest news' → search_web(query='latest news today', open_in_browser=True, platform='google')
+
+WEB SEARCH RULES:
+When search_web returns results:
+1. READ all results carefully
+2. Extract the most relevant info
+3. Summarize in YOUR OWN WORDS
+4. Give direct answer to user
+5. NEVER paste raw search results
+6. NEVER show ads or sponsored content
+7. Format response beautifully
+
+Example:
+User: iPhone price in India
+search_web returns: [raw results]
+
+Your response should be:
+📱 *iPhone Prices in India (2026)*
+
+- iPhone 17: ₹79,900 onwards
+- iPhone 17 Pro: ₹1,19,900 onwards  
+- iPhone 16: ₹69,900 onwards
+- iPhone 15: ₹59,900 onwards
+
+💡 Best deals available on:
+Flipkart, Amazon, Apple Store India
+
+NOT the raw search results!
+
+DOCUMENT SUMMARIZATION RULES:
+
+When user asks to summarize:
+
+1. Use the read_and_summarize tool directly on the filename. DO NOT use share_file tool during summarization operations!
+
+2. Read the content completely
+
+3. Detect summary style from message:
+   - short/brief = 3-4 lines
+   - points/bullets = bullet list
+   - detail/full = with headings
+   - default = professional format
+
+4. Format response like this:
+
+   DEFAULT FORMAT:
+   📄 *[Filename]*
+   
+   *📋 Overview*
+   [2 line overview]
+   
+   *🔑 Key Points*
+   • [point 1]
+   • [point 2]
+   • [point 3]
+   
+   *💡 Conclusion*
+   [1 line conclusion]
+
+   SHORT FORMAT:
+   📄 *[Filename]*
+   [3-4 lines summary]
+
+   POINTS FORMAT:
+   📄 *[Filename]*
+   _[1-line brief overview]_
+   
+   🎯 *[Brief Topic 1]:* [point 1]
+   📈 *[Brief Topic 2]:* [point 2]
+   💡 *[Brief Topic 3]:* [point 3]
+
+   DETAIL FORMAT:
+   📄 *[Filename]*
+   
+   *📋 Introduction*
+   [paragraph]
+   
+   *📌 Main Content*
+   [detailed sections]
+   
+   *💡 Key Takeaways*
+   • [points]
+   
+   *✅ Conclusion*
+   [paragraph]
+
+5. NEVER send raw file content
+   Always send formatted summary only
+   
+6. Use Telegram Markdown formatting:
+   *bold* for headings
+   _italic_ for emphasis
+   • for bullet points
+
+GITHUB MCP RULES — VERY IMPORTANT:
+You have a live connection to GitHub's official MCP server. It exposes dozens of real tools dynamically.
+- When the user asks about GitHub (repos, issues, PRs, code), use the GitHub MCP tools that are injected into your schema.
+- The tool names come from the live server — they will look like: `list_issues`, `create_issue`, `list_pull_requests`, `search_repositories`, `get_file_contents`, etc.
+- NEVER guess or hallucinate a GitHub tool name. Only call tools that are listed in your current schema.
+- For multi-step GitHub tasks (e.g. "find all open issues and summarise them"):
+  → Step 1: Call the list/search tool to get data.
+  → Step 2: Format and return a clean summary to the user.
+  → ONLY respond after ALL steps are done.
+- When listing issues or PRs, format them cleanly:
+  🐛 *Open Issues in [repo]*
+  #123 — Bug title
+  #124 — Another bug
+- When creating an issue, confirm with: ✅ *Issue #[number] created successfully!*
+- NEVER say you cannot access GitHub. You have a live MCP connection — just call the tool.
+
+GMAIL MCP RULES:
+You have a live connection to Google's official Gmail MCP server.
+- Tool names will look like: `gmail_search_mail`, `gmail_list_messages`, `gmail_send_email`, `gmail_create_draft`, etc.
+- ALWAYS call `request_confirmation` before sending ANY email — show the user the To, Subject, and Body first.
+- Format email lists cleanly:
+  📧 *Recent Emails*
+  • From: sender@email.com — Subject line
+- NEVER expose raw email IDs or thread IDs to the user.
+
+GOOGLE CALENDAR MCP RULES:
+You have a live connection to Google's official Calendar MCP server.
+- Tool names will look like: `calendar_create_event`, `calendar_list_events`, `calendar_delete_event`, etc.
+- When creating a meeting/event: confirm the title, date, time, and attendees BEFORE calling create_event.
+- Format event lists clearly:
+  📅 *Upcoming Events*
+  • Mon 28 Apr, 3:00 PM — Meeting with Priya
+- For scheduling, always ask for timezone if not specified.
+
+SLACK MCP RULES:
+You have a live connection to Slack's official MCP server.
+- Tool names will look like: `slack_post_message`, `slack_list_channels`, `slack_search_messages`, etc.
+- Always confirm the channel name and message content before sending.
+- Format channel/message results cleanly:
+  💬 *#general* — Last message: "Hey team..."
+- NEVER expose workspace tokens or user IDs to the user.
+
+HINGLISH SUPPORT:
+You may receive requests in Hinglish (Hindi + English mix).
+Examples:
+- 'mera username kya hai' -> Interpret as 'what is my username'
+- 'repos dikhao' -> Interpret as 'list my repositories'
+- 'issue banao' -> Interpret as 'create an issue'
+- 'bhejo' -> Interpret as 'send/share'
+Always interpret Hinglish intent naturally and map to correct tools.
+
+NOTION MCP RULES (GROQ OPTIMIZATION):
+When using notion_create_page:
+- title is required
+- parent_id can be empty string '' if not specified
+- content can be empty string '' if not specified
+- NEVER pass null for any parameter
+- Always use empty string '' as default"""
+
+# MCP KEYWORD MAPPING
+MCP_KEYWORD_MAP = {
+    "spotify": "spotify",
+    "music": "spotify",
+    "play": "spotify",
+    "song": "spotify",
+    "artist": "spotify",
+    "playlist": "spotify",
+    "github": "github",
+    "repo": "github",
+    "pull request": "github",
+    "issue": "github",
+    "notion": "notion",
+    "notes": "notion",
+    "gmail": "gmail",
+    "email": "gmail",
+    "slack": "slack",
+    "message": "slack",
+    "calendar": "google_calendar",
+    "schedule": "google_calendar",
+    "meeting": "google_calendar",
+    "event": "google_calendar",
+    "appointment": "google_calendar",
+    "remind": "google_calendar",
+}
 
 
 
@@ -66,7 +315,7 @@ def _check_ollama_available() -> bool:
     """Quick check if Ollama is reachable."""
     import requests
     try:
-        resp = requests.get(OLLAMA_HOST, timeout=2)
+        resp = requests.get(OLLAMA_HOST, timeout=5)
         return resp.status_code == 200
     except Exception:
         return False
@@ -80,35 +329,65 @@ def build_fallback_chain() -> list:
     - local: Ollama only
     - cloud: Groq + optional Ollama fallback
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
     import opendesk.config as cfg
     
+    # Force reload config
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    
+    mode = os.getenv("USER_MODE", "local").strip().lower()
+    
+    # Debug print
+    logger.debug(f"Building chain for mode: {mode}")
+    
     chain = []
-    mode = cfg.USER_MODE or "developer"  # Default to developer if mode is empty (legacy setups)
 
 
     if mode == "developer":
-        # ── Developer: Full 6-model chain (new order) ──
-        # 1. Groq Key 1 - llama-3.3-70b-versatile
-        chain.append({"name": "Groq Llama 70B (Key 1)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-        # 2. Groq Key 2 - llama-3.3-70b-versatile
-        chain.append({"name": "Groq Llama 70B (Key 2)", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
-        # 3. GitHub - gpt-4o-mini
-        if GITHUB_API_KEY:
-            try:
-                from langchain_openai import ChatOpenAI  # type: ignore
-                llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
-                chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
-            except ImportError:
-                logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
-        # 4. Gemini - gemini-2.0-flash
-        if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
-            llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GEMINI_API_KEY, temperature=0.0)
-            chain.append({"name": "Gemini 2.0 Flash", "llm": llm_gemini})
-        # 5. Groq Key 1 - mixtral-8x7b
-        chain.append({"name": "Groq Mixtral (Key 1)", "llm": ChatGroq(model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
-        # 6. Groq Key 2 - mixtral-8x7b
-        chain.append({"name": "Groq Mixtral (Key 2)", "llm": ChatGroq(model_name="mixtral-8x7b-32768", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+        if getattr(cfg, "OPENDESK_ENV", "production") == "testing":
+            # ── TESTING MODE ──
+            # Llama 4 Scout: native Tool Use + Vision + 128K context on Groq
+            # GPT-4o-mini is the proven reliable fallback if Scout has any issue
+            chain.append({"name": "Groq Llama 4 Scout (Key 1)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            chain.append({"name": "Groq Llama 4 Scout (Key 2)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+            if GROQ_API_KEY_3:
+                chain.append({"name": "Groq Llama 4 Scout (Key 3)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+
+            # 4. GitHub - gpt-4o-mini
+            if GITHUB_API_KEY:
+                try:
+                    from langchain_openai import ChatOpenAI  # type: ignore
+                    llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
+                    chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
+                except ImportError:
+                    logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
+                    
+            # 4. Local - Gemma fallback
+            if _check_ollama_available():
+                llm_gemma = ChatOllama(model="gemma3:12b", base_url=OLLAMA_HOST, temperature=0.0)
+                chain.append({"name": "Local Gemma Fallback", "llm": llm_gemma})
+        else:
+            # ── PRODUCTION MODE ──
+            # Llama 4 Scout: native Tool Use + Vision + 128K context on Groq
+            # GPT-4o-mini is the proven reliable fallback if Scout has any issue
+            chain.append({"name": "Groq Llama 4 Scout (Key 1)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+            chain.append({"name": "Groq Llama 4 Scout (Key 2)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_2, temperature=0.0)})
+            if GROQ_API_KEY_3:
+                chain.append({"name": "Groq Llama 4 Scout (Key 3)", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_3, temperature=0.0)})
+
+            # 4. GitHub - gpt-4o-mini
+            if GITHUB_API_KEY:
+                try:
+                    from langchain_openai import ChatOpenAI  # type: ignore
+                    llm_gpt = ChatOpenAI(model="gpt-4o-mini", api_key=GITHUB_API_KEY, base_url="https://models.inference.ai.azure.com", temperature=0.0)
+                    chain.append({"name": "GitHub GPT-4o-mini", "llm": llm_gpt})
+                except ImportError:
+                    logger.warning("langchain_openai not installed. GPT-4o-mini disabled.")
+
+            # 4. Local - Gemma fallback
+            if _check_ollama_available():
+                llm_gemma = ChatOllama(model="gemma3:12b", base_url=OLLAMA_HOST, temperature=0.0)
+                chain.append({"name": "Local Gemma Fallback", "llm": llm_gemma})
 
         # No logging here to keep terminal clean
 
@@ -119,8 +398,8 @@ def build_fallback_chain() -> list:
         logger.info(f"Local mode: Using Ollama {OLLAMA_MODEL_NAME}")
 
     elif mode == "cloud":
-        # ── Cloud: Groq + optional Ollama fallback ──
-        chain.append({"name": "Groq Llama 70B", "llm": ChatGroq(model_name="llama-3.3-70b-versatile", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
+        # ── Cloud: Llama 4 Scout (native tool use) + optional Ollama fallback ──
+        chain.append({"name": "Groq Llama 4 Scout", "llm": ChatGroq(model_name="meta-llama/llama-4-scout-17b-16e-instruct", groq_api_key=GROQ_API_KEY_1, temperature=0.0)})
         # Silent Ollama fallback if installed
         if _check_ollama_available():
             llm_local_backup = ChatOllama(model=OLLAMA_MODEL_NAME, base_url=OLLAMA_HOST, temperature=0.0)
@@ -130,6 +409,53 @@ def build_fallback_chain() -> list:
             logger.info("Cloud mode: Groq only (no Ollama detected).")
 
     return chain
+
+
+# ── Tools that should NEVER be pruned from the retry schema ──
+# These are "delivery" tools that may need to be re-called with corrected args.
+_NEVER_PRUNE_TOOLS = {"share_file", "send_whatsapp_file", "send_whatsapp_message", "request_confirmation"}
+
+# Tools that are safe to prune once successfully executed (one-time lookups)
+_ONE_TIME_TOOLS = {
+    "find_latest_file", "find_file_location", "find_files_by_filter",
+    "list_directory", "read_and_summarize", "open_path", "open_application",
+    "get_system_info", "get_battery_level", "get_current_time", "get_current_volume",
+    "search_web", "read_webpage",
+}
+
+
+def _estimate_task_complexity(message: str) -> int:
+    """
+    Scores a user message for multi-step complexity.
+    Returns the max_iterations the agent loop should use.
+    Simple tasks → 3, medium → 5, complex → 7.
+    """
+    msg = message.lower()
+
+    # MACRO TASKS: Apps like WhatsApp/Spotify need open_app + action = minimum 2 calls
+    # Force at least MEDIUM so they always have enough iterations
+    macro_keywords = ["whatsapp", "spotify", "gmail", "telegram", "instagram",
+                      "facebook", "teams", "youtube music", "github", "repository",
+                      "pull request", "calendar", "schedule", "meeting", "google calendar"]
+    is_macro = any(kw in msg for kw in macro_keywords)
+
+    # Each distinct action verb counts as one step
+    action_verbs = ["find", "open", "take", "screenshot", "share", "send", "read",
+                    "summarise", "summarize", "create", "write", "search", "check",
+                    "tell me", "show me", "play", "download", "close", "click",
+                    "commit", "merge", "clone", "list", "push", "review", "close issue"]
+    step_count = sum(1 for v in action_verbs if v in msg)
+
+    if step_count >= 4:
+        logger.info(f"Task complexity: HIGH ({step_count} verbs) → max_iterations=7")
+        return 7
+    elif step_count >= 2 or is_macro:
+        reason = f"{step_count} verbs" + (", macro-app detected" if is_macro else "")
+        logger.info(f"Task complexity: MEDIUM ({reason}) → max_iterations=5")
+        return 5
+    # LOW floor is 4 (not 3) to give any task a one-step safety buffer
+    logger.info(f"Task complexity: LOW ({step_count} verbs) → max_iterations=4")
+    return 4
 
 
 # Build the chain at module load
@@ -195,8 +521,8 @@ def _parse_hallucinated_tool_call(text: str):
                     
                 if tool_args: # Only return if we actually found kwargs
                     return tool_name, tool_args
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Kwargs extraction failed: {e}")
 
 
     # Pattern 3: XML style <function=tool_name>{"arg": "val"}</function> (backup)
@@ -220,6 +546,16 @@ def _parse_hallucinated_tool_call(text: str):
         except json.JSONDecodeError:
             pass
 
+    # Pattern 4.5: tool_name{"args"} format (models often drop the <function> tags)
+    match = re.search(r'(\w+)\s*(\{.*?\})', text, re.DOTALL)
+    if match:
+        tool_name = match.group(1)
+        try:
+            tool_args = json.loads(match.group(2))
+            return tool_name, tool_args
+        except json.JSONDecodeError:
+            pass
+
     # Pattern 5: Action / Action Input text format
     action_match = re.search(r'Action:\s*(\w+)', text, re.IGNORECASE)
     input_match = re.search(r'Action Input:\s*(\{.*?\})', text, re.IGNORECASE | re.DOTALL)
@@ -234,49 +570,148 @@ def _parse_hallucinated_tool_call(text: str):
 
     return None, None
 
-async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[str]]:
-    """
-    SUPERVISOR ENTRY POINT: Orchestrates Memory, Executor, and Judge.
-    """
-    # 1. MEMORY AGENT: Check history for best approach
-    hint = memory_agent.get_context(user_message)
-    memory_context = ""
-    if hint:
-        memory_context = f"\n[MEMORY HINT]: For similar requests, the tool '{hint['tool']}' worked best using model '{hint['model']}'."
-        if hint['failed']:
-            memory_context += f" Avoid these failed approaches: {', '.join(hint['failed'])}."
+def format_summary(
+    content: str,
+    style: str = "default"
+) -> str:
+    
+    if style == "short":
+        # 3-4 lines maximum
+        # Key points only
+        prompt = (
+            f"Summarize in 3-4 lines only:\n"
+            f"{content}"
+        )
+    
+    elif style == "brief":
+        # One paragraph
+        prompt = (
+            f"Write one paragraph summary:\n"
+            f"{content}"
+        )
+    
+    elif style == "points":
+        # Bullet points
+        prompt = (
+            f"Summarize as bullet points:\n"
+            f"{content}"
+        )
+    
+    elif style == "detail":
+        # Full detailed summary
+        prompt = (
+            f"Write detailed summary with "
+            f"headings and subheadings:\n"
+            f"{content}"
+        )
+    
+    else:
+        # Default professional summary
+        prompt = (
+            f"Write a professional summary "
+            f"with these sections:\n"
+            f"• Overview (2 lines)\n"
+            f"• Key Points (3-5 bullets)\n"
+            f"• Conclusion (1 line)\n\n"
+            f"Content:\n{content}"
+        )
+    
+    return prompt
 
-    max_supervisor_retries = 3
+def detect_summary_style(
+    message: str
+) -> str:
+    msg = message.lower()
+    
+    if any(w in msg for w in [
+        "short", "brief", "quick",
+        "small", "chhota", "thoda"
+    ]):
+        return "short"
+    
+    elif any(w in msg for w in [
+        "points", "bullets", "list",
+        "point by point"
+    ]):
+        return "points"
+    
+    elif any(w in msg for w in [
+        "detail", "detailed", "full",
+        "complete", "poora", "depth"
+    ]):
+        return "detail"
+    
+    elif any(w in msg for w in [
+        "brief", "one para",
+        "paragraph"
+    ]):
+        return "brief"
+    
+    else:
+        return "default"
+
+async def run(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None, routing_info: Optional[dict] = None) -> Tuple[str, List[str]]:
+    """
+    SUPERVISOR ENTRY POINT: Orchestrates Executor and Judge.
+    Uses routing_info passed from Semantic Router to bypass complex logic.
+    """
+    routing_info = routing_info or {}
+    routing_level = routing_info.get("level", "low")  # 'low', 'medium', or 'complex'
+    
+    if routing_info.get("skip_judge", False):
+        logger.info(f"SEMANTIC ROUTER OPTIMIZATION: '{routing_level}' intent detected. Bypassing Judge.")
+        result, attachments, _ = await _execute(user_message, memory_history, status_callback=status_callback, routing_level=routing_level)
+        return result, attachments
+
+    memory_context = ""
+
+    max_supervisor_retries = 2
     current_correction = ""
+    cached_criteria = ""   # Reuse criteria across attempts — no point re-calling on retry
     tool_logs = []
     import asyncio
     for attempt in range(max_supervisor_retries):
         logger.info(f"Supervisor Attempt {attempt + 1}/{max_supervisor_retries}")
-        # 2. PARALLEL EXECUTION: Run Executor and Judge Preparation simultaneously
-        # We pass the memory context and any current correction to the executor
         executor_input = user_message
         if memory_context or current_correction:
             executor_input = f"{user_message}\n{memory_context}\n{current_correction}".strip()
-            
-        executor_task = asyncio.create_task(_execute(executor_input, memory_history))
-        judge_prep_task = asyncio.create_task(judge_agent.prepare_evaluation_criteria(user_message))
-        
-        # Wait for both to finish simultaneously
-        (result, attachments, attempt_logs), criteria = await asyncio.gather(executor_task, judge_prep_task)
-        
+
+        # On retry, smart-prune one-time lookup tools (not delivery tools like share_file)
+        completed_tool_names_for_retry = set()
+        if attempt > 0 and tool_logs:
+            completed_tool_names_for_retry = {
+                log["name"] for log in tool_logs
+                if not str(log.get("output", "")).strip().lower().startswith("error")
+            }
+            if completed_tool_names_for_retry:
+                logger.info(f"Retry: Pruning completed tools from schema: {completed_tool_names_for_retry}")
+
+        executor_task = asyncio.create_task(
+            _execute(executor_input, memory_history, status_callback=status_callback,
+                     completed_tool_names=completed_tool_names_for_retry, routing_level=routing_level)
+        )
+
+        if attempt == 0:
+            # First attempt: generate criteria in parallel with executor (zero wait cost)
+            judge_prep_task = asyncio.create_task(judge_agent.prepare_evaluation_criteria(user_message))
+            (result, attachments, attempt_logs), cached_criteria = await asyncio.gather(executor_task, judge_prep_task)
+        else:
+            # Retry: criteria is already cached — no LLM call needed, just run executor
+            result, attachments, attempt_logs = await executor_task
+
         tool_logs.extend(attempt_logs)
         
         # SPEED OPTIMIZATION A: Simple Command Bypassing
         # If the Executor ONLY used simple tools (or didn't use any tools but gave a response), skip the Judge.
         used_tools = [log["name"] for log in attempt_logs] if attempt_logs else []
-        is_simple_task = all(t in SIMPLE_TOOLS for t in used_tools)
+        is_simple_task = bool(used_tools) and all(t in SIMPLE_TOOLS for t in used_tools)
         
-        if is_simple_task and not current_correction:
-            logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple command.")
-            # SPEED OPTIMIZATION B: Async Memory Saving (Fire and Forget)
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", True)
-            )
+        # Async tasks that pause execution (WhatsApp logic/Safety Gates)
+        ASYNC_PAUSE_TOOLS = {"send_whatsapp_file", "send_whatsapp_message", "share_file", "request_confirmation"}
+        is_paused_task = bool(used_tools) and any(t in ASYNC_PAUSE_TOOLS for t in used_tools)
+
+        if (is_simple_task or is_paused_task) and not current_correction:
+            logger.info("SPEED OPTIMIZATION: Bypassing Judge Agent for simple/paused command.")
             return result, attachments
 
         # 3. JUDGE AGENT: Evaluate using the pre-computed criteria
@@ -294,39 +729,66 @@ async def run(user_message: str, memory_history: str = "") -> Tuple[str, List[st
             except Exception as e:
                 logger.error(f"Failed to take verification screenshot: {e}")
 
-        evaluation = await judge_agent.evaluate_response(user_message, result, attempt_logs, criteria, image_b64=image_b64)
+        # Pass cumulative tool_logs (ALL attempts) so the judge can see work done in prior attempts.
+        # Using only attempt_logs caused attempt-2 judge to not see find_latest_file/take_screenshot from attempt-1.
+        evaluation = await judge_agent.evaluate_response(user_message, result, tool_logs, cached_criteria, image_b64=image_b64)
         logger.info(f"Judge Evaluation: {evaluation}")
         
         if evaluation["task_completed"] and not evaluation["hallucinated"]:
-            # SUCCESS: Save to memory and return
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", True)
-            )
             return result, attachments
 
         else:
             # FAILURE: Record mismatch and retry
             logger.warning(f"Judge rejected response: {evaluation['correction']}")
-            current_correction = f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}. Please try again and ensure you call the correct tools."
-            asyncio.create_task(
-                asyncio.to_thread(memory_agent.record_result, user_message, used_tools[-1] if used_tools else "none", "executor", False)
+
+            # CHECKPOINT CONTEXT: Collect successful steps from this attempt so the
+            # agent doesn't re-run them and waste tokens / hit 413 on retry.
+            successful_steps = [
+                log for log in attempt_logs
+                if not str(log.get("output", "")).strip().lower().startswith("error")
+            ]
+            steps_context = ""
+            if successful_steps:
+                step_lines = []
+                for log in successful_steps:
+                    out_preview = str(log["output"])[:300].replace("\n", " ")
+                    step_lines.append(f"  - {log['name']} -> DONE. Output: {out_preview}")
+                steps_context = (
+                    "\n\nCompleted steps (DO NOT re-run):\n" + "\n".join(step_lines)
+                )
+                logger.info(f"Checkpoint: {len(successful_steps)} step(s) passed to retry.")
+
+            current_correction = (
+                f"\n[PREVIOUS ATTEMPT FAILED]: {evaluation['correction']}."
+                f"{steps_context}"
+                "\nFor the retry: fix ONLY the failing step. "
+                "Reuse the output values above directly — do NOT call those tools again."
             )
-            
+
     return f"I tried {max_supervisor_retries} times but could not complete this task. Final issue: {current_correction}", []
 
-async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, List[str], List[Dict]]:
+async def _execute(user_message: str, memory_history: str = "", status_callback: Optional[Callable] = None, completed_tool_names: set = None, routing_level: str = "low") -> Tuple[str, List[str], List[Dict]]:
     """
     Internal execution step (The Agent Loop).
     Returns (response_text, attachments, tool_logs)
+    completed_tool_names: set of tool names already executed successfully — stripped from schema on retry.
+    routing_level: hint from the Semantic Router ('low', 'medium', 'complex') used to enforce a minimum iteration budget.
     """
     tool_logs = []
     ctx_summary = monitor_instance.get_current_context_summary()
+    # Fix 3: Truncate large OCR text/system context to 500 chars to avoid token limits
+    if ctx_summary and len(ctx_summary) > 500:
+        ctx_summary = ctx_summary[:500] + "... [TRUNCATED]"
     
     # Hide system context in a way that the model knows it's background data
     system_ctx = f"[BACKGROUND SYSTEM STATE - DO NOT REPEAT UNLESS ASKED]\n{ctx_summary}\n"
     
     input_text = f"{system_ctx}\nUser Request: {user_message}"
     if memory_history:
+        # Fix 3: Truncate conversation history for judge/executor to 3 messages
+        history_lines = memory_history.strip().split('\n')
+        if len(history_lines) > 3:
+            memory_history = "\n".join(history_lines[-3:])
         input_text = f"Recent Conversation History:\n{memory_history}\n\n{input_text}"
         
     messages: List[Any] = [
@@ -345,6 +807,76 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
     else:
         logger.info("Running in Core mode. Advanced tools are stripped to prevent schema failures.")
         
+    # ===== MCP AWARE ROUTING =====
+    from opendesk.mcp_client import mcp_client
+    connected_apps = {app["id"] for app in mcp_client.list_connected_apps()}
+    
+    target_mcp_app = None
+    msg_low = user_message.lower()
+    
+    # SENIOR DEVELOPER LOGIC: Smart Routing to avoid collisions
+    # Don't route 'play' to Spotify if user mentions 'youtube' or 'video'
+    is_video = any(v in msg_low for v in ["video", "youtube", "watch", "film", "movie", "clip"])
+    
+    for kw, app_id in MCP_KEYWORD_MAP.items():
+        if kw in msg_low and app_id in connected_apps:
+            # Avoid mis-routing 'play' for YouTube to Spotify
+            if app_id == "spotify" and is_video:
+                continue
+            target_mcp_app = app_id
+            break
+            
+    if target_mcp_app:
+        logger.info(f"MCP Routing Match: Context detected for connected app '{target_mcp_app}'")
+        
+        # Remove fragile fallback tools if the real MCP app is connected
+        if target_mcp_app == "spotify":
+            active_tools = [t for t in active_tools if t.name != "play_spotify_music"]
+            
+        mcp_tools = await mcp_client.get_app_tools(target_mcp_app)
+        
+        from pydantic import create_model
+        for mcp_tool in mcp_tools:
+            # Dynamically convert MCP JSON Schema to Pydantic Model for LangChain
+            schema_dict = mcp_tool.inputSchema or {}
+            fields = {}
+            for key, prop in schema_dict.get('properties', {}).items():
+                ptype = str
+                if prop.get('type') == 'integer': ptype = int
+                elif prop.get('type') == 'boolean': ptype = bool
+                elif prop.get('type') == 'number': ptype = float
+                elif prop.get('type') == 'array': ptype = list
+                
+                required = key in schema_dict.get('required', [])
+                fields[key] = (ptype, ...) if required else (ptype, None)
+                
+            try:
+                args_schema = create_model(mcp_tool.name, **fields)
+                lc_t = StructuredTool.from_function(
+                    func=lambda **kwargs: "MCP Placeholder",
+                    name=mcp_tool.name,
+                    description=mcp_tool.description or f"MCP tool for {target_mcp_app}",
+                    args_schema=args_schema
+                )
+                lc_t.metadata = {"mcp_app_id": target_mcp_app}
+                active_tools.append(lc_t)
+                logger.info(f"Injected MCP tool: {mcp_tool.name}")
+            except Exception as e:
+                logger.error(f"Failed to parse schema for MCP tool {mcp_tool.name}: {e}")
+                
+    # =============================
+        
+    # RETRY OPTIMISATION: Smart schema pruning on retry.
+    # Only prune ONE-TIME lookup tools (find, open, read) — never prune delivery tools
+    # (share_file, send_whatsapp_*) since they may need to be re-called with corrected args.
+    if completed_tool_names:
+        safe_to_prune = completed_tool_names & _ONE_TIME_TOOLS  # intersection
+        pruned = [t for t in active_tools if t.name not in safe_to_prune]
+        removed = len(active_tools) - len(pruned)
+        if removed > 0:
+            logger.info(f"Schema smart-pruned: removed {removed} one-time tool(s) {safe_to_prune}. Delivery tools preserved.")
+        active_tools = pruned
+        
     # Dynamically build the fallback chain for the current mode
     current_fallback_base = build_fallback_chain()
     active_fallback_chain = []
@@ -353,7 +885,10 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
         active_fallback_chain.append({"name": option["name"], "llm": llm_with_tools})
     
     attachments = []
-    max_iterations = 10
+    # Merge content-based complexity estimate with semantic router's level hint
+    # so both systems agree on the iteration budget (take the higher of the two)
+    _router_min = {"low": 4, "medium": 5, "complex": 7}.get(routing_level, 4)
+    max_iterations = max(_estimate_task_complexity(user_message), _router_min)
     
     for i in range(max_iterations):
         logger.info(f"Agent Loop Iteration {i+1}/{max_iterations}")
@@ -398,9 +933,32 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                 for idx, fallback_option in enumerate(active_fallback_chain):
                     model_name = fallback_option["name"]
                     llm = fallback_option["llm"]
+                    
+                    # Fix 3: Token overflow protection for GitHub GPT-4o-mini (Azure limit 8k)
+                    final_messages = messages_to_send
+                    if "GitHub GPT-4o-mini" in model_name:
+                        logger.info(f"Applying aggressive context scrubbing for {model_name}...")
+                        scrubbed = [messages_to_send[0]] # Always keep System Message
+                        
+                        # Only keep the last 2 messages of actual interaction
+                        recent = messages_to_send[-2:] if len(messages_to_send) > 2 else messages_to_send[1:]
+                        
+                        for m in recent:
+                            # 1. Strip images
+                            if isinstance(m, HumanMessage) and isinstance(m.content, list):
+                                text_parts = [p["text"] for p in m.content if p.get("type") == "text"]
+                                m = HumanMessage(content="\n".join(text_parts) if text_parts else "[Image Removed]")
+                            
+                            # 2. Truncate tool results to 500 chars
+                            if isinstance(m, ToolMessage) and len(m.content) > 500:
+                                m = ToolMessage(content=m.content[:500] + "... [TRUNCATED]", tool_call_id=m.tool_call_id)
+                                
+                            scrubbed.append(m)
+                        final_messages = scrubbed
+
                     try:
                         logger.info(f"Attempting invocation with {model_name}...")
-                        ai_msg = llm.invoke(messages_to_send)
+                        ai_msg = llm.invoke(final_messages)
                         break # Success! Break out of the fallback loop
                     except Exception as e:
                         error_text = str(e).lower()
@@ -447,12 +1005,18 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                                 func = _TOOLS.get(h_name)
                                 if func:
                                     try:
-                                        obs = func(**h_args)
+                                        obs = await asyncio.to_thread(func, **h_args)
                                         logger.info(f"INLINE FALLBACK SUCCESS: {h_name} returned: {obs}")
                                         tool_logs.append({"name": h_name, "args": h_args, "output": str(obs)})
-                                        # Handle attachments ...
-                                        return str(obs), attachments, tool_logs
-                                    except Exception: pass
+                                        # FIXED: Inject result back into message chain instead of returning early.
+                                        # This allows multi-step tasks (e.g. read PDF → create Word doc) to continue.
+                                        messages.append(SystemMessage(content=f"Tool '{h_name}' executed successfully. Result:\n{str(obs)}"))
+                                        messages.append(HumanMessage(content=f"The previous tool '{h_name}' completed. Now continue with the original request and do any remaining steps."))
+                                        ai_msg = None  # Force next iteration
+                                        break  # Exit fallback chain loop, proceed to next agent iteration
+                                    except Exception as inline_e:
+                                        logger.debug(f"Inline fallback tool execution failed: {inline_e}")
+
                         
                         logger.warning(f"Model {model_name} failed with error: {error_text[:200]}. Falling back to next model...")
                         
@@ -504,53 +1068,94 @@ async def _execute(user_message: str, memory_history: str = "") -> Tuple[str, Li
                 tool_args = tool_call["args"]
                 tool_id = tool_call["id"]
                 
+                from opendesk.utils.status_messages import get_status
                 logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
                 
-                func = _TOOLS.get(tool_name)
-                if not func:
-                    obs = f"Error: Tool '{tool_name}' not found. Available: {list(_TOOLS.keys())}"
-                else:
-                    try:
-                        import asyncio
-                        # BLOCKING TOOL: Run in thread to keep event loop free
-                        obs = await asyncio.to_thread(func, **tool_args)
-                        
-                        tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
-                        
-                        # Log command usage in thread too
-                        from opendesk.db.crud import log_command
-                        await asyncio.to_thread(log_command, f"{tool_name}({tool_args})", status="success", output=str(obs))
-                        
-                        # Handle attachments
-                        if isinstance(obs, str) and ("saved successfully at" in obs or "shared successfully at" in obs):
-                            try:
-                                marker = "shared successfully at " if "shared successfully at" in obs else "saved successfully at "
-                                path_str = obs.split(marker)[1].split("\n")[0].strip().strip('"').strip("'")
-                                if os.path.exists(path_str):
-                                    if path_str not in attachments:
-                                        attachments.append(path_str)
-                                        
-                                    if tool_name == "take_screenshot":
-                                        base64_image = _encode_image(path_str)
-                                        image_message = HumanMessage(
-                                            content=[
-                                                {"type": "text", "text": f"Tool '{tool_name}' result:\n{obs}\nHere is the screenshot:"},
-                                                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{base64_image}"}
-                                            ]
-                                        )
-                                        messages.append(image_message)
-                                        continue 
-                            except Exception as e:
-                                logger.error(f"Error processing attachment: {e}")
-                                
-                    except Exception as e:
-                        obs = f"Error executing {tool_name}: {str(e)}"
-                        logger.error(obs)
-
-
+                # CRITICAL FIX: Global Boolean Coercion (Fixes infinite loops)
+                for k, v in tool_args.items():
+                    if isinstance(v, str) and v.lower() in ("true", "false", "yes", "no"):
+                        tool_args[k] = v.lower() in ("true", "yes")
                 
-                # Append tool result back to context
-                messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                # Fix: If taking a screenshot after an MCP tool, wait for UI to load
+                if tool_name == "take_screenshot" and i > 0:
+                    logger.info("Delaying screenshot for UI stabilization...")
+                    await asyncio.sleep(3)
+                
+                # Check if this is an MCP tool
+                mcp_app_id = None
+                for t in active_tools:
+                    if t.name == tool_name and hasattr(t, 'metadata') and t.metadata and "mcp_app_id" in t.metadata:
+                        mcp_app_id = t.metadata["mcp_app_id"]
+                        break
+                        
+                if mcp_app_id:
+                    logger.info(f"Routing execution to MCP Server: {mcp_app_id}")
+                    if status_callback:
+                        await status_callback(f"Communicating with {mcp_app_id.title()}...")
+                    
+                    obs = await mcp_client.call_tool(mcp_app_id, tool_name, tool_args)
+                    tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
+                    
+                else:
+                    func = _TOOLS.get(tool_name)
+                    if not func:
+                        obs = f"Error: Tool '{tool_name}' not found. Available: {list(_TOOLS.keys())}"
+                    elif func:
+                        try:
+                            if status_callback:
+                                beautiful_status = get_status(tool_name)
+                                await status_callback(beautiful_status)
+                            
+                            # BLOCKING TOOL: Run in thread to keep event loop free
+                            obs = await asyncio.to_thread(func, **tool_args)
+                            
+                            tool_logs.append({"name": tool_name, "args": tool_args, "output": str(obs)})
+                            
+                            # Log command usage in thread too
+                            from opendesk.db.crud import log_command
+                            await asyncio.to_thread(log_command, f"{tool_name}({tool_args})", status="success", output=str(obs))
+                            
+                            # Handle attachments
+                            if isinstance(obs, str) and ("saved successfully at" in obs or "shared successfully at" in obs):
+                                try:
+                                    marker = "shared successfully at " if "shared successfully at" in obs else "saved successfully at "
+                                    path_str = obs.split(marker)[1].split("\n")[0].strip().strip('"').strip("'")
+                                    if os.path.exists(path_str):
+                                        if path_str not in attachments:
+                                            attachments.append(path_str)
+                                            
+                                        if tool_name == "take_screenshot":
+                                            base64_image = _encode_image(path_str)
+                                            
+                                            # 1. Satisfy the LLM's required ToolMessage contract first
+                                            messages.append(ToolMessage(content=str(obs), tool_call_id=tool_id))
+                                            
+                                            # 2. Inject the actual image back into the context as a HumanMessage
+                                            image_message = HumanMessage(
+                                                content=[
+                                                    {"type": "text", "text": f"Here is the screenshot from the screen:"},
+                                                    {"type": "image_url", "image_url": f"data:image/jpeg;base64,{base64_image}"}
+                                                ]
+                                            )
+                                            messages.append(image_message)
+                                            continue 
+                                except Exception as e:
+                                    logger.error(f"Error processing attachment: {e}")
+                                    
+                        except Exception as e:
+                            obs = f"Error executing {tool_name}: {str(e)}"
+                            logger.error(obs)
+
+                # Append tool result back to context (truncated to prevent 413 overflow)
+                obs_str = str(obs)
+                if len(obs_str) > 1500:
+                    obs_str = obs_str[:1500] + "\n...[output truncated to save context]"
+                messages.append(ToolMessage(content=obs_str, tool_call_id=tool_id))
+                
+                # HALT LOOP if human-in-the-loop action is requested
+                if isinstance(obs, str) and "AWAITING_CONFIRMATION" in obs:
+                    logger.info("Tool returned AWAITING_CONFIRMATION. Halting agent loop to wait for user.")
+                    return str(obs), attachments, tool_logs
                 
         except Exception as e:
             error_msg = str(e)

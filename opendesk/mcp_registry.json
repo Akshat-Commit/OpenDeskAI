@@ -1,0 +1,87 @@
+[
+  {
+    "id": "spotify",
+    "name": "Spotify",
+    "icon": "\ud83c\udfb5",
+    "mcp_url": "https://api.spotify.com",
+    "auth_type": "oauth",
+    "description": "Control playback, search music, and manage playlists.",
+    "connected": true,
+    "scopes": [
+      "user-read-playback-state",
+      "user-modify-playback-state",
+      "user-read-currently-playing"
+    ],
+    "session_id": "2471be1c-a125-4fba-8eff-d731666282de"
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "icon": "🐙",
+    "mcp_url": "stdio://local/github-mcp-server",
+    "mcp_type": "stdio",
+    "auth_type": "oauth",
+    "description": "Manage repositories, issues, and pull requests locally via stdio.",
+    "connected": true,
+    "scopes": [
+      "repo",
+      "workflow"
+    ],
+    "session_id": "daf40a3b-2c43-483d-95cc-bf5000773b08"
+  },
+  {
+    "id": "notion",
+    "name": "Notion",
+    "icon": "\ud83d\udcd3",
+    "mcp_url": "https://mcp.notion.com/mcp",
+    "auth_type": "oauth",
+    "description": "Read and write to your Notion workspace and databases.",
+    "connected": true,
+    "scopes": [
+      "read_content",
+      "update_content"
+    ],
+    "session_id": "fe37fad8-db88-4d2f-b378-ca4351cd3f64"
+  },
+  {
+    "id": "gmail",
+    "name": "Gmail",
+    "icon": "\ud83d\udce7",
+    "mcp_url": "https://gmailmcp.googleapis.com/mcp/v1",
+    "auth_type": "oauth",
+    "description": "Read, search, and send emails.",
+    "connected": false,
+    "scopes": [
+      "https://mail.google.com/"
+    ]
+  },
+  {
+    "id": "google_calendar",
+    "name": "Google Calendar",
+    "icon": "\ud83d\udcc5",
+    "mcp_url": "https://calendarmcp.googleapis.com/mcp/v1",
+    "auth_type": "oauth",
+    "description": "Schedule meetings, manage events, and block dates on your calendar.",
+    "connected": false,
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar"
+    ]
+  },
+  {
+    "id": "slack",
+    "name": "Slack",
+    "icon": "\ud83d\udcac",
+    "mcp_url": "https://mcp.slack.com/mcp",
+    "auth_type": "oauth",
+    "description": "Send messages, read channels, and manage workspace.",
+    "connected": false,
+    "scopes": [
+      "channels:read",
+      "chat:write",
+      "groups:read",
+      "im:read",
+      "files:read",
+      "users:read"
+    ]
+  }
+]

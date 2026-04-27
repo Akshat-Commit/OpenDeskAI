@@ -67,3 +67,14 @@ CREATE TABLE IF NOT EXISTS chat_history (
     content TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+-- OCR text extracted from screenshots by OCRAnalyzer
+CREATE TABLE IF NOT EXISTS screenshot_ocr (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    screenshot_path TEXT UNIQUE,
+    extracted_text TEXT,
+    keywords TEXT,
+    captured_at TEXT,
+    analyzed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocr_text ON screenshot_ocr(extracted_text);

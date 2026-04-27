@@ -21,14 +21,14 @@ class ContextMonitor:
         self.is_running = True
         self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._thread.start()
-        logger.info("ContextMonitor started in the background.")
+        logger.debug("ContextMonitor started in the background.")
 
     def stop(self):
         """Stops the background monitoring thread."""
         self.is_running = False
         if self._thread:
             self._thread.join(timeout=2.0)
-            logger.info("ContextMonitor stopped.")
+            logger.debug("ContextMonitor stopped.")
 
     def _monitor_loop(self):
         """Internal loop to periodically fetch system state."""
@@ -37,9 +37,16 @@ class ContextMonitor:
                 # Get active window
                 active_window = gw.getActiveWindow()
                 if active_window is not None:
-                    self.active_window_title = active_window.title
+                    title = active_window.title.strip()
+                    self.active_window_title = title if title else "Unknown Application (Empty Title)"
                 else:
                     self.active_window_title = "None (Desktop or Lock Screen)"
+
+                # Get all visible windows for better context
+                windows = gw.getAllWindows()
+                visible = [w.title.strip() for w in windows if w.title.strip() and w.visible and w.width > 0]
+                # Deduplicate and filter noise
+                self.visible_windows = list(set([t for t in visible if t not in ['Program Manager', 'Settings']]))
 
                 # Get system resources
                 self.cpu_percent = psutil.cpu_percent(interval=None) # type: ignore
@@ -52,8 +59,10 @@ class ContextMonitor:
 
     def get_current_context_summary(self) -> str:
         """Returns a string summarizing the current user context."""
+        other_apps = ", ".join(self.visible_windows[:5]) if hasattr(self, 'visible_windows') and self.visible_windows else "None"
         summary = (
             f"Active Foreground Window: '{self.active_window_title}'\n"
+            f"Other Open Windows: {other_apps}\n"
             f"System CPU Usage: {self.cpu_percent}%\n"
             f"System RAM Usage: {self.memory_percent}%\n"
         )

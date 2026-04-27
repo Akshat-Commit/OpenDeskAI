@@ -27,13 +27,15 @@ def run_terminal_command(command: str) -> str:
             # BUT we validate/sanitize it.
             # However, direct executables should use shell=False.
             if cmd_args[0].lower() == "start":
-                subprocess.Popen(
-                    command,
-                    shell=True,
+                # Secure way to launch apps via start without shell=True
+                safe_cmd = ["cmd", "/c", "start", ""] + cmd_args[1:]
+                subprocess.Popen(  # noqa: S603
+                    safe_cmd,
+                    shell=False,
                     cwd=os.path.expanduser("~")
                 )
             else:
-                subprocess.Popen(
+                subprocess.Popen(  # noqa: S603
                     cmd_args,
                     shell=False,
                     cwd=os.path.expanduser("~")
@@ -41,8 +43,8 @@ def run_terminal_command(command: str) -> str:
             return f"App launch command executed: {command}"
         else:
             # Safer way to run powershell commands
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            result = subprocess.run(  # noqa: S603
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],  # noqa: S607
                 capture_output=True,
                 text=True,
                 timeout=60,
