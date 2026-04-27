@@ -1,10 +1,16 @@
-from pydantic import BaseModel, Field  # type: ignore
-from typing import Optional, List
+from pydantic import BaseModel, Field, validator  # type: ignore
+from typing import Optional, List, Union
 
 
 class TypeTextInput(BaseModel):
     text: str = Field(description="The exact text string to type on the keyboard.")
-    press_enter: bool = Field(default=False, description="Set this to true if you want to automatically press the Enter key immediately after typing the text (e.g., to submit a form or send a message).")
+    press_enter: Union[bool, str] = Field(default=False, description="Must be boolean true/false. NOT string. Press Enter after typing if true.")
+
+    @validator('press_enter', pre=True)
+    def coerce_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return v
 
 
 class RunTerminalCommandInput(BaseModel):
@@ -126,7 +132,13 @@ class OpenPathInput(BaseModel):
 
 class ListDirectoryInput(BaseModel):
     directory_path: str = Field(default="", description="Path or folder alias to list. Use 'downloads', 'desktop', 'documents', 'pictures' etc. Leave empty for the home directory.")
-    files_only: bool = Field(default=False, description="Set to True to show only files (hide subdirectory entries).")
+    files_only: Union[bool, str] = Field(default=False, description="Must be boolean true/false. Set to True to show only files.")
+
+    @validator('files_only', pre=True)
+    def coerce_bool(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return v
 
 
 # Mapping of tool names to their strict Pydantic Schemas
